@@ -76,7 +76,7 @@ pub async fn hotkey_status(window: Window) -> Result<HotkeyStatus, AppError> {
 ///
 /// 探测是阻塞操作（底层要同步注册/注销全局热键），因此本 command 是**同步**的：
 /// Tauri 会把它放到专用线程执行，不占用异步运行时的工作线程，
-/// 也不会在 async 上下文里做阻塞调用（见 `docs/CODING-STANDARDS.md`）。
+/// 也不会在 async 上下文里做阻塞调用（架构规范）。
 #[tauri::command]
 pub fn hotkey_probe(
     app: tauri::AppHandle,

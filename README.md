@@ -20,7 +20,7 @@
   - macOS: `cocoa` / `core-graphics` crate
   - Linux: `x11` / `xcb` crate
 
-选型理由与取舍见 [`docs/DECISIONS.md`](./docs/DECISIONS.md)。
+选型理由见 [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) 核心选型章节。
 
 ## 环境要求
 
@@ -87,9 +87,8 @@
 
 | 文件                                                 | 内容                                      |
 |------------------------------------------------------|-------------------------------------------|
-| [`AGENTS.md`](./AGENTS.md)                           | AI 协作总纲：硬规则、命令、目录、定义完成 |
+| [`AGENTS.md`](./AGENTS.md)                           | AI 协作总纲：硬规则、命令、目录           |
 | [`TASKS.md`](./TASKS.md)                             | 里程碑与任务清单（唯一进度源）            |
 | [`docs/SPEC.md`](./docs/SPEC.md)                     | 功能规格与 UI 规范                        |
-| [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md)     | 架构、IPC 契约、数据库 schema             |
-| [`docs/PLATFORM-NOTES.md`](./docs/PLATFORM-NOTES.md) | 平台特定 API 坑位与实现要点               |
-| [`docs/DECISIONS.md`](./docs/DECISIONS.md)           | 架构决策记录（ADR）                       |
+| [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md)     | 架构、核心选型、IPC 契约、数据库 schema   |
+| [`docs/PLATFORM-NOTES.md`](./docs/PLATFORM-NOTES.md) | 平台特定 API 坑位、实现要点与代码示例     |

@@ -360,7 +360,7 @@
   （`clipboard_list/get/set_pinned/delete`）、`storage.rs` 的 `list/get/set_pinned/delete` 与 `open_readonly_at`
 - 并发模型：每 command 短连接 + `spawn_blocking`，`Connection` 与锁都不跨 await；`DbPath` 只读受管状态
 - 排序照 `ARCHITECTURE §5.3`：`pinned DESC` 首键；FTS 集合内按 `bm25`；末尾 `id DESC` 稳定 tie-break
-- 图片预览：`tauri.conf.json` 开 `assetProtocol`（scope `$APPDATA/blobs/**`）+ Cargo `protocol-asset` feature，见 `docs/DECISIONS.md` ADR-0013
+- 图片预览：`tauri.conf.json` 开 `assetProtocol`（scope `$APPDATA/blobs/**`）+ Cargo `protocol-asset` feature，见 `docs/ARCHITECTURE.md` 核心选型
 - 偏差 1：v1 无回收站，`Delete` 与 `Shift+Delete` 都是物理删除（`hard` 只区分是否删 blob；孤儿 blob 由 T-206 回收）
 - 偏差 2：`Enter` / `Ctrl+Enter` 在 T-204 只完成键位接线并提示「功能开发中」，真实粘贴/仅复制在 T-205
 - 偏差 3：`thumb_path` 恒为 NULL（WIC 缩略图未实现），列表用类型占位图标
@@ -713,7 +713,7 @@ mini-design：docs/reviews/T-206-design.md（设计自检通过，无需 ADR）
 **设计决策与理由**
 
 1. **command 用同步 `fn` 而非 `async`**：探测底层要同步注册/注销全局热键，
-   `async fn` 里做阻塞调用违反 `docs/CODING-STANDARDS.md`「禁止在 async 中做阻塞调用」。
+   `async fn` 里做阻塞调用违反架构规范（禁止在 async 中做阻塞调用）。
    Tauri 会把同步 command 放到专用线程执行，不占异步运行时的工作线程。
 2. **结论 vs 错误二分**：「被占用」「格式非法」是**结论**（`Ok`）；
    探测环境故障（X11 断连、权限不足）才是**失败**（`Err`）。
@@ -722,7 +722,7 @@ mini-design：docs/reviews/T-206-design.md（设计自检通过，无需 ADR）
 3. **新增依赖 `global-hotkey = "0.8"`**：本就是 `tauri-plugin-global-shortcut` 的传递依赖，
    版本完全一致，不引入新包、不增加编译量、不改变依赖树。
    标准库与既有依赖（插件）都无法提供类型化的「已被占用」信号。
-   详见 `docs/DECISIONS.md` ADR-0017。
+   详见 `docs/ARCHITECTURE.md` 核心选型。
 4. **`is_bound` 两边都 trim**：`bindings` 存注册时的原始字符串，探测入参会先 trim，
    不归一化会把「自己绑定的键」误判成「被别人占用」。
 
