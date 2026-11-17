@@ -1,18 +1,14 @@
 # Quick
 
-跨平台常驻效率工具：`Alt+Space`（macOS: `Option+Space`）启动器、`Alt+V`（macOS: `Option+V`）剪贴板历史。
-
-> 当前状态：**M0 文档与骨架阶段**。文档已定稿，业务代码尚未开始。进度以 [`TASKS.md`](./TASKS.md) 为唯一准绳。
+跨平台常驻效率工具：启动器、剪贴板历史 等工具。
 
 ## 功能
 
-| 模块 | 说明 | 默认热键 |
-|---|---|---|
-| 启动器 | 搜索并打开应用 | `Alt+Space`（macOS: `Option+Space`） |
-| 剪贴板历史 | 文本 / 图片 / 文件列表，搜索、置顶、回车粘贴 | `Alt+V`（macOS: `Option+V`） |
-| 设置 | 热键录制、保留策略、主题 | 托盘菜单 |
-
-所有热键都可在设置中改绑；注册失败时会有明确提示，不会静默失效。
+| 模块       | 说明                                         | 默认热键                             |
+|------------|----------------------------------------------|--------------------------------------|
+| 启动器     | 搜索并打开应用                               | `Alt+Space`（macOS: `Option+Space`） |
+| 剪贴板历史 | 文本 / 图片 / 文件列表，搜索、置顶、回车粘贴 | `Alt+V`（macOS: `Option+V`）         |
+| 设置       | 热键录制、保留策略、主题                     | 托盘菜单                             |
 
 ## 技术栈
 
@@ -30,49 +26,29 @@
 
 ### 跨平台
 
-| 依赖 | 版本 | 说明 |
-|---|---|---|
-| Windows 10 1809+ / macOS 12+ / Linux (X11/Wayland) | - | 主要目标 Windows 11、macOS 14+、Ubuntu 22.04+ |
-| Node.js | ≥20（当前 v24.22.1） | 前端构建 |
-| npm | ≥10（当前 11.19.1） | 包管理 |
-| Rust stable | rustc 1.99.1+ | 后端编译 |
-| Git | 2.55.0+ | 版本管理 |
+| 依赖                                               | 版本                 | 说明                                          |
+|----------------------------------------------------|----------------------|-----------------------------------------------|
+| Windows 10 1809+ / macOS 12+ / Linux (X11/Wayland) | -                    | 主要目标 Windows 11、macOS 14+、Ubuntu 22.04+ |
+| Node.js                                            | ≥20（当前 v24.22.1） | 前端构建                                      |
+| npm                                                | ≥10（当前 11.19.1）  | 包管理                                        |
+| Rust stable                                        | rustc 1.99.1+        | 后端编译                                      |
+| Git                                                | 2.55.0+              | 版本管理                                      |
 
-### Windows 特定
+## 常用命令
 
-| 依赖 | 版本 | 说明 |
-|---|---|---|
-| WebView2 Runtime | 155.0.4283.62+ | Win11 自带；Win10 需安装 Evergreen Runtime |
-| MSVC Build Tools | VS 18 Build Tools | 需勾选「使用 C++ 的桌面开发」 |
+> Windows 下所有 `npm run` 命令建议用 `npm.cmd run` 替代，避免 PowerShell 执行策略问题。
 
-> PowerShell 默认执行策略会拦截 `npm.ps1`，本项目所有脚本命令统一用 **`npm.cmd`**。
+| 用途           | 命令                  |
+|----------------|-----------------------|
+| 安装依赖       | `npm install`         |
+| 开发（完整）   | `npm run tauri:dev`   |
+| 开发（仅前端） | `npm run dev`         |
+| 类型检查       | `npm run typecheck`   |
+| 测试           | `npm run test`        |
+| 质量门         | `npm run verify`      |
+| 打包           | `npm run tauri:build` |
 
-## 快速开始
-
-```bash
-npm install
-npm run tauri:dev
-```
-
-Windows 下建议用 `npm.cmd` 替代 `npm`，避免 PowerShell 执行策略问题。
-
-常用命令：
-
-```bash
-npm run dev          # 只启动前端（无 Tauri API，会报错，仅供样式调试）
-npm run typecheck    # TypeScript 类型检查
-npm run test         # 前端单测
-npm run verify       # 质量门：typecheck + lint + test + rust fmt/clippy/test
-npm run tauri:build  # 打包
-```
-
-Rust 侧单独跑：
-
-```bash
-cargo fmt --manifest-path src-tauri/Cargo.toml --check
-cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
-cargo test --manifest-path src-tauri/Cargo.toml
-```
+`verify` 包含：`typecheck` + `test` + `cargo fmt --check` + `cargo clippy` + `cargo test`。**提交前必须全绿。**
 
 ## 数据位置
 
@@ -109,11 +85,11 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 ## 文档
 
-| 文件 | 内容 |
-|---|---|
-| [`AGENTS.md`](./AGENTS.md) | AI 协作总纲：硬规则、命令、目录、定义完成 |
-| [`TASKS.md`](./TASKS.md) | 里程碑与任务清单（唯一进度源） |
-| [`docs/SPEC.md`](./docs/SPEC.md) | 功能规格与 UI 规范 |
-| [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) | 架构、IPC 契约、数据库 schema |
-| [`docs/PLATFORM-NOTES.md`](./docs/PLATFORM-NOTES.md) | 平台特定 API 坑位与实现要点 |
-| [`docs/DECISIONS.md`](./docs/DECISIONS.md) | 架构决策记录（ADR） |
+| 文件                                                 | 内容                                      |
+|------------------------------------------------------|-------------------------------------------|
+| [`AGENTS.md`](./AGENTS.md)                           | AI 协作总纲：硬规则、命令、目录、定义完成 |
+| [`TASKS.md`](./TASKS.md)                             | 里程碑与任务清单（唯一进度源）            |
+| [`docs/SPEC.md`](./docs/SPEC.md)                     | 功能规格与 UI 规范                        |
+| [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md)     | 架构、IPC 契约、数据库 schema             |
+| [`docs/PLATFORM-NOTES.md`](./docs/PLATFORM-NOTES.md) | 平台特定 API 坑位与实现要点               |
+| [`docs/DECISIONS.md`](./docs/DECISIONS.md)           | 架构决策记录（ADR）                       |
