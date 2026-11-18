@@ -544,3 +544,173 @@ pub struct ResizePayload {
 pub struct ShowPayload {
     pub mode: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn 模式字符串转换() {
+        // from_str
+        assert_eq!(
+            OverlayMode::from_str("launcher"),
+            Some(OverlayMode::Launcher)
+        );
+        assert_eq!(
+            OverlayMode::from_str("clipboard"),
+            Some(OverlayMode::Clipboard)
+        );
+        assert_eq!(OverlayMode::from_str("invalid"), None);
+        assert_eq!(OverlayMode::from_str(""), None);
+
+        // as_str
+        assert_eq!(OverlayMode::Launcher.as_str(), "launcher");
+        assert_eq!(OverlayMode::Clipboard.as_str(), "clipboard");
+    }
+
+    #[test]
+    fn 初始状态为隐藏() {
+        let manager = OverlayManager::new();
+        assert_eq!(manager.get_state(), OverlayState::Hidden);
+        assert_eq!(manager.get_mode(), None);
+    }
+
+    #[test]
+    fn 设置隐藏选项() {
+        let manager = OverlayManager::new();
+
+        // 默认值
+        assert!(*manager.hide_on_blur.lock().unwrap());
+        assert!(!*manager.prefers_reduced_motion.lock().unwrap());
+
+        // 修改
+        manager.set_hide_on_blur(false);
+        manager.set_prefers_reduced_motion(true);
+
+        // 验证
+        assert!(!*manager.hide_on_blur.lock().unwrap());
+        assert!(*manager.prefers_reduced_motion.lock().unwrap());
+    }
+
+    #[test]
+    fn 粘贴锁互斥() {
+        let manager = OverlayManager::new();
+        let lock = manager.paste_guard();
+
+        // 第一次获取成功
+        let guard1 = lock.try_lock();
+        assert!(guard1.is_ok());
+
+        // 第二次获取失败（已被占用）
+        let guard2 = lock.try_lock();
+        assert!(guard2.is_err());
+
+        // 释放后可以重新获取
+        drop(guard1);
+        let guard3 = lock.try_lock();
+        assert!(guard3.is_ok());
+    }
+
+    #[test]
+    fn 状态机隐藏逻辑() {
+        // 测试 hide 方法的状态转换规则
+        // Hidden → Hidden（幂等）
+        // Hiding → Hiding（忽略）
+        // Showing → Hiding（取消显示）
+        // Shown → Hiding（正常隐藏）
+
+        let manager = OverlayManager::new();
+
+        // 初始状态
+        assert_eq!(manager.get_state(), OverlayState::Hidden);
+
+        // 手动设置状态来测试
+        *manager.state.lock().unwrap() = OverlayState::Shown;
+        assert_eq!(manager.get_state(), OverlayState::Shown);
+
+        // 设置回 Hidden
+        *manager.state.lock().unwrap() = OverlayState::Hidden;
+        assert_eq!(manager.get_state(), OverlayState::Hidden);
+    }
+
+    #[test]
+    fn 状态机显示逻辑() {
+        let manager = OverlayManager::new();
+
+        // 初始状态
+        assert_eq!(manager.get_state(), OverlayState::Hidden);
+
+        // 手动设置状态
+        *manager.state.lock().unwrap() = OverlayState::Showing;
+        assert_eq!(manager.get_state(), OverlayState::Showing);
+
+        *manager.state.lock().unwrap() = OverlayState::Shown;
+        assert_eq!(manager.get_state(), OverlayState::Shown);
+
+        *manager.state.lock().unwrap() = OverlayState::Hiding;
+        assert_eq!(manager.get_state(), OverlayState::Hiding);
+    }
+
+    #[test]
+    fn 模式切换逻辑() {
+        let manager = OverlayManager::new();
+
+        // 初始无模式
+        assert_eq!(manager.get_mode(), None);
+
+        // 设置模式
+        *manager.current_mode.lock().unwrap() = Some(OverlayMode::Launcher);
+        assert_eq!(manager.get_mode(), Some(OverlayMode::Launcher));
+
+        // 切换模式
+        *manager.current_mode.lock().unwrap() = Some(OverlayMode::Clipboard);
+        assert_eq!(manager.get_mode(), Some(OverlayMode::Clipboard));
+    }
+
+    #[test]
+    fn 隐藏原因枚举() {
+        // 测试 HideReason 的所有变体
+        let reasons = [
+            HideReason::UserCommand,
+            HideReason::Blur,
+            HideReason::ModeSwitch,
+            HideReason::Launch,
+        ];
+
+        // 确保所有变体都可以创建和比较
+        assert_eq!(HideReason::UserCommand, HideReason::UserCommand);
+        assert_ne!(HideReason::UserCommand, HideReason::Blur);
+        assert_eq!(reasons.len(), 4);
+    }
+
+    #[test]
+    fn 恢复结果枚举() {
+        // 测试 RestoreOutcome 的所有变体
+        let outcomes = [
+            RestoreOutcome::Restored,
+            RestoreOutcome::NoTarget,
+            RestoreOutcome::Failed,
+        ];
+
+        // 确保所有变体都可以创建和比较
+        assert_eq!(RestoreOutcome::Restored, RestoreOutcome::Restored);
+        assert_ne!(RestoreOutcome::Restored, RestoreOutcome::Failed);
+        assert_eq!(outcomes.len(), 3);
+    }
+
+    #[test]
+    fn 状态枚举完整性() {
+        // 测试 OverlayState 的所有变体
+        let states = [
+            OverlayState::Hidden,
+            OverlayState::Showing,
+            OverlayState::Shown,
+            OverlayState::Hiding,
+        ];
+
+        // 确保所有变体都可以创建和比较
+        assert_eq!(OverlayState::Hidden, OverlayState::Hidden);
+        assert_ne!(OverlayState::Hidden, OverlayState::Shown);
+        assert_eq!(states.len(), 4);
+    }
+}

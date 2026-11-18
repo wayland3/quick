@@ -101,28 +101,36 @@ fn png_to_dib_windows(png: &[u8]) -> Result<Vec<u8>, AppError> {
             .GetFrame(0)
             .map_err(|e| AppError::Internal(format!("WIC frame failed: {}", e)))?;
 
-        let converted = frame
-            .ConvertPixelFormat(
+        // 创建格式转换器
+        let converter = factory
+            .CreateFormatConverter()
+            .map_err(|e| AppError::Internal(format!("WIC converter create failed: {}", e)))?;
+
+        // 初始化转换器
+        converter
+            .Initialize(
+                &frame,
                 &GUID_WICPixelFormat32bppBGRA,
                 WICBitmapDitherTypeNone,
-                &WICBitmapPaletteTypeCustom,
+                None,
+                0.0,
+                WICBitmapPaletteTypeCustom,
             )
-            .map_err(|e| AppError::Internal(format!("WIC convert failed: {}", e)))?;
+            .map_err(|e| AppError::Internal(format!("WIC convert init failed: {}", e)))?;
 
-        let width = converted
-            .GetSize()
-            .map_err(|e| AppError::Internal(format!("WIC size failed: {}", e)))?
-            .Width as usize;
-        let height = converted
-            .GetSize()
-            .map_err(|e| AppError::Internal(format!("WIC size failed: {}", e)))?
-            .Height as usize;
+        let mut width = 0u32;
+        let mut height = 0u32;
+        converter
+            .GetSize(&mut width, &mut height)
+            .map_err(|e| AppError::Internal(format!("WIC size failed: {}", e)))?;
+        let width = width as usize;
+        let height = height as usize;
 
         let stride = width * 4;
         let pixels_len = stride * height;
         let mut pixels = vec![0u8; pixels_len];
 
-        converted
+        converter
             .CopyPixels(std::ptr::null(), stride as u32, &mut pixels)
             .map_err(|e| AppError::Internal(format!("WIC copy failed: {}", e)))?;
 
@@ -170,10 +178,18 @@ mod tests {
     #[test]
     #[allow(non_snake_case)]
     fn 非空PNG返回数据() {
-        let png = vec![0x89, 0x50, 0x4E, 0x47]; // PNG magic
-        let result = png_to_dib(&png);
-        assert!(result.is_ok());
+        // 1×1 蓝色 PNG（由 System.Drawing 生成的有效 PNG，120 字节）
+        const ONE_PX_PNG: &[u8] = &[
+            137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1,
+            8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 1, 115, 82, 71, 66, 0, 174, 206, 28, 233, 0,
+            0, 0, 4, 103, 65, 77, 65, 0, 0, 177, 143, 11, 252, 97, 5, 0, 0, 0, 9, 112, 72, 89, 115,
+            0, 0, 14, 195, 0, 0, 14, 195, 1, 199, 111, 168, 100, 0, 0, 0, 13, 73, 68, 65, 84, 24,
+            87, 99, 96, 96, 248, 255, 31, 0, 3, 2, 1, 255, 201, 178, 173, 238, 0, 0, 0, 0, 73, 69,
+            78, 68, 174, 66, 96, 130,
+        ];
+        let result = png_to_dib(ONE_PX_PNG);
+        assert!(result.is_ok(), "有效 PNG 应能解码: {:?}", result.err());
         #[cfg(target_os = "linux")]
-        assert_eq!(result.unwrap(), png);
+        assert_eq!(result.unwrap(), ONE_PX_PNG);
     }
 }

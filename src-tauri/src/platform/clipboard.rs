@@ -159,7 +159,9 @@ mod windows_impl {
         GetClipboardData, GetClipboardSequenceNumber, OpenClipboard, RegisterClipboardFormatW,
         SetClipboardData,
     };
-    use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+    use windows::Win32::System::Memory::{
+        GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
+    };
     use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
 
     const CF_UNICODETEXT: u32 = 13;
@@ -350,8 +352,12 @@ mod windows_impl {
     }
 
     fn read_unicode_text() -> Result<Option<String>, AppError> {
-        let handle = unsafe { GetClipboardData(CF_UNICODETEXT) }.ok()?;
-        let ptr = unsafe { GlobalLock(handle) } as *const u16;
+        let handle = match unsafe { GetClipboardData(CF_UNICODETEXT) } {
+            Ok(h) => h,
+            Err(_) => return Ok(None),
+        };
+        let hglobal = HGLOBAL(handle.0);
+        let ptr = unsafe { GlobalLock(hglobal) } as *const u16;
         if ptr.is_null() {
             return Ok(None);
         }
@@ -362,37 +368,45 @@ mod windows_impl {
         }
 
         let text = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(ptr, len) });
-        unsafe { GlobalUnlock(handle) };
+        let _ = unsafe { GlobalUnlock(hglobal) };
 
         Ok(Some(text))
     }
 
     fn read_html(format: u32) -> Result<Option<String>, AppError> {
-        let handle = unsafe { GetClipboardData(format) }.ok()?;
-        let ptr = unsafe { GlobalLock(handle) } as *const u8;
+        let handle = match unsafe { GetClipboardData(format) } {
+            Ok(h) => h,
+            Err(_) => return Ok(None),
+        };
+        let hglobal = HGLOBAL(handle.0);
+        let ptr = unsafe { GlobalLock(hglobal) } as *const u8;
         if ptr.is_null() {
             return Ok(None);
         }
 
-        let size = unsafe { GlobalSize(handle) };
+        let size = unsafe { GlobalSize(hglobal) };
         let bytes = unsafe { std::slice::from_raw_parts(ptr, size) };
         let html = String::from_utf8_lossy(bytes).to_string();
-        unsafe { GlobalUnlock(handle) };
+        let _ = unsafe { GlobalUnlock(hglobal) };
 
         Ok(Some(html))
     }
 
     fn read_rtf(format: u32) -> Result<Option<String>, AppError> {
-        let handle = unsafe { GetClipboardData(format) }.ok()?;
-        let ptr = unsafe { GlobalLock(handle) } as *const u8;
+        let handle = match unsafe { GetClipboardData(format) } {
+            Ok(h) => h,
+            Err(_) => return Ok(None),
+        };
+        let hglobal = HGLOBAL(handle.0);
+        let ptr = unsafe { GlobalLock(hglobal) } as *const u8;
         if ptr.is_null() {
             return Ok(None);
         }
 
-        let size = unsafe { GlobalSize(handle) };
+        let size = unsafe { GlobalSize(hglobal) };
         let bytes = unsafe { std::slice::from_raw_parts(ptr, size) };
         let rtf = String::from_utf8_lossy(bytes).to_string();
-        unsafe { GlobalUnlock(handle) };
+        let _ = unsafe { GlobalUnlock(hglobal) };
 
         Ok(Some(rtf))
     }
@@ -403,27 +417,34 @@ mod windows_impl {
     }
 
     fn read_image_data(format: u32) -> Result<Option<ImageRead>, AppError> {
-        let handle = unsafe { GetClipboardData(format) }.ok()?;
-        let ptr = unsafe { GlobalLock(handle) } as *const u8;
+        let handle = match unsafe { GetClipboardData(format) } {
+            Ok(h) => h,
+            Err(_) => return Ok(None),
+        };
+        let hglobal = HGLOBAL(handle.0);
+        let ptr = unsafe { GlobalLock(hglobal) } as *const u8;
         if ptr.is_null() {
             return Ok(None);
         }
 
-        let size = unsafe { GlobalSize(handle) };
+        let size = unsafe { GlobalSize(hglobal) };
         if size > IMAGE_MAX_BYTES {
-            unsafe { GlobalUnlock(handle) };
+            let _ = unsafe { GlobalUnlock(hglobal) };
             return Ok(Some(ImageRead::TooLarge));
         }
 
         let bytes = unsafe { std::slice::from_raw_parts(ptr, size) };
         let data = bytes.to_vec();
-        unsafe { GlobalUnlock(handle) };
+        let _ = unsafe { GlobalUnlock(hglobal) };
 
         Ok(Some(ImageRead::Data(data)))
     }
 
     fn read_file_list() -> Result<Option<Vec<String>>, AppError> {
-        let handle = unsafe { GetClipboardData(CF_HDROP) }.ok()?;
+        let handle = match unsafe { GetClipboardData(CF_HDROP) } {
+            Ok(h) => h,
+            Err(_) => return Ok(None),
+        };
         let hdrop = HDROP(handle.0);
 
         let count = unsafe { DragQueryFileW(hdrop, 0xFFFFFFFF, None) };
@@ -525,14 +546,14 @@ mod windows_impl {
 
         let ptr = unsafe { GlobalLock(handle) } as *mut u16;
         if ptr.is_null() {
-            unsafe { GlobalFree(handle) };
+            let _ = unsafe { GlobalFree(Some(handle)) };
             return Err(AppError::Internal("GlobalLock failed".into()));
         }
 
         unsafe { std::ptr::copy_nonoverlapping(wide.as_ptr(), ptr, wide.len()) };
-        unsafe { GlobalUnlock(handle) };
+        let _ = unsafe { GlobalUnlock(handle) };
 
-        unsafe { SetClipboardData(CF_UNICODETEXT, HANDLE(handle.0 as *mut _)) }?;
+        unsafe { SetClipboardData(CF_UNICODETEXT, Some(HANDLE(handle.0 as *mut _))) }?;
 
         Ok(())
     }
@@ -545,14 +566,14 @@ mod windows_impl {
 
             let ptr = unsafe { GlobalLock(handle) } as *mut u8;
             if ptr.is_null() {
-                unsafe { GlobalFree(handle) };
+                let _ = unsafe { GlobalFree(Some(handle)) };
                 return Err(AppError::Internal("GlobalLock failed".into()));
             }
 
             unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, size) };
-            unsafe { GlobalUnlock(handle) };
+            let _ = unsafe { GlobalUnlock(handle) };
 
-            unsafe { SetClipboardData(format, HANDLE(handle.0 as *mut _)) }?;
+            unsafe { SetClipboardData(format, Some(HANDLE(handle.0 as *mut _))) }?;
         }
 
         Ok(())
@@ -566,14 +587,14 @@ mod windows_impl {
 
             let ptr = unsafe { GlobalLock(handle) } as *mut u8;
             if ptr.is_null() {
-                unsafe { GlobalFree(handle) };
+                let _ = unsafe { GlobalFree(Some(handle)) };
                 return Err(AppError::Internal("GlobalLock failed".into()));
             }
 
             unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, size) };
-            unsafe { GlobalUnlock(handle) };
+            let _ = unsafe { GlobalUnlock(handle) };
 
-            unsafe { SetClipboardData(format, HANDLE(handle.0 as *mut _)) }?;
+            unsafe { SetClipboardData(format, Some(HANDLE(handle.0 as *mut _))) }?;
         }
 
         Ok(())
@@ -585,12 +606,12 @@ mod windows_impl {
 
         let ptr = unsafe { GlobalLock(handle) } as *mut u8;
         if ptr.is_null() {
-            unsafe { GlobalFree(handle) };
+            let _ = unsafe { GlobalFree(Some(handle)) };
             return Err(AppError::Internal("GlobalLock failed".into()));
         }
 
         unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), ptr, size) };
-        unsafe { GlobalUnlock(handle) };
+        let _ = unsafe { GlobalUnlock(handle) };
 
         let cf = match format {
             ImageFormat::Png => register_format("PNG").unwrap_or(0),
@@ -598,13 +619,13 @@ mod windows_impl {
         };
 
         if cf != 0 {
-            unsafe { SetClipboardData(cf, HANDLE(handle.0 as *mut _)) }?;
+            unsafe { SetClipboardData(cf, Some(HANDLE(handle.0 as *mut _))) }?;
         }
 
         Ok(())
     }
 
-    fn write_file_list(files: &[String]) -> Result<(), AppError> {
+    fn write_file_list(_files: &[String]) -> Result<(), AppError> {
         // 简化版：暂不实现
         Ok(())
     }

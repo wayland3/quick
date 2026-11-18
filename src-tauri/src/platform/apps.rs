@@ -59,6 +59,7 @@ mod windows_impl {
     use super::*;
     use std::os::windows::ffi::OsStrExt;
     use windows::core::{Interface, GUID, PCWSTR, PWSTR};
+    use windows::Win32::Foundation::PROPERTYKEY;
     use windows::Win32::Foundation::{
         ERROR_NO_MORE_ITEMS, ERROR_SUCCESS, HANDLE, HWND, RPC_E_CHANGED_MODE,
     };
@@ -70,7 +71,6 @@ mod windows_impl {
         RegCloseKey, RegEnumKeyExW, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER,
         HKEY_LOCAL_MACHINE, KEY_READ, REG_EXPAND_SZ, REG_SZ,
     };
-    use windows::Win32::UI::Shell::PropertiesSystem::PROPERTYKEY;
     /// `KF_FLAG_DEFAULT` 来自该模块（值为 0）
     use windows::Win32::UI::Shell::KF_FLAG_DEFAULT;
     use windows::Win32::UI::Shell::{
@@ -263,7 +263,7 @@ mod windows_impl {
             RegOpenKeyExW(
                 root,
                 PCWSTR::from_raw(subkey_wide.as_ptr()),
-                0,
+                Some(0),
                 KEY_READ,
                 &mut key,
             )
@@ -284,10 +284,10 @@ mod windows_impl {
                 RegEnumKeyExW(
                     key.0,
                     index,
-                    PWSTR::from_raw(name_buf.as_mut_ptr()),
+                    Some(PWSTR::from_raw(name_buf.as_mut_ptr())),
                     &mut name_len,
                     None,
-                    PWSTR::null(),
+                    None,
                     None,
                     None,
                 )
@@ -331,7 +331,7 @@ mod windows_impl {
             RegOpenKeyExW(
                 parent,
                 PCWSTR::from_raw(child_wide.as_ptr()),
-                0,
+                Some(0),
                 KEY_READ,
                 &mut child,
             )
@@ -405,7 +405,7 @@ mod windows_impl {
         // ShellExecuteW 返回值只当错误码使用，不是可释放的句柄。
         let result = unsafe {
             ShellExecuteW(
-                None::<&HWND>,
+                None::<HWND>,
                 PCWSTR(operation.as_ptr()),
                 PCWSTR(file.as_ptr()),
                 parameters
@@ -469,30 +469,6 @@ mod windows_impl {
         }
     }
 
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        #[allow(non_snake_case)]
-        fn 启动失败原因按错误码分类() {
-            assert_eq!(shell_error_reason(2), "应用不存在或已被移动");
-            assert_eq!(shell_error_reason(5), "没有权限打开该应用");
-            assert_eq!(shell_error_reason(31), "找不到可打开该应用的关联程序");
-            assert_eq!(shell_error_reason(32), "缺少运行该应用所需的组件");
-            assert_eq!(shell_error_reason(0), "无法打开该应用");
-        }
-
-        #[test]
-        #[allow(non_snake_case)]
-        fn 启动失败原因不含数字编码() {
-            for code in [0u32, 2, 3, 5, 31, 32, 999] {
-                let reason = shell_error_reason(code);
-                assert!(!reason.contains(&code.to_string()));
-            }
-        }
-    }
-
     /// 枚举 `shell:AppsFolder` 中的 UWP 应用；整体失败返回错误，由调用方降级
     pub fn list_uwp_apps() -> Result<Vec<UwpApp>, AppError> {
         let _com = ComApartment::new()?;
@@ -502,7 +478,7 @@ mod windows_impl {
             SHGetKnownFolderIDList(
                 &FOLDERID_AppsFolder,
                 KF_FLAG_DEFAULT.0 as u32,
-                None::<&HANDLE>,
+                None::<HANDLE>,
             )
         }
         .map_err(|error| AppError::Internal(format!("定位 AppsFolder 失败: {}", error)))?;
@@ -598,6 +574,30 @@ mod windows_impl {
         // SAFETY: 指针由 COM 用 CoTaskMemAlloc 分配，必须由调用方用 CoTaskMemFree 释放
         unsafe { CoTaskMemFree(Some(ptr.0 as *const core::ffi::c_void)) };
         text.filter(|value| !value.is_empty())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        #[allow(non_snake_case)]
+        fn 启动失败原因按错误码分类() {
+            assert_eq!(shell_error_reason(2), "应用不存在或已被移动");
+            assert_eq!(shell_error_reason(5), "没有权限打开该应用");
+            assert_eq!(shell_error_reason(31), "找不到可打开该应用的关联程序");
+            assert_eq!(shell_error_reason(32), "缺少运行该应用所需的组件");
+            assert_eq!(shell_error_reason(0), "无法打开该应用");
+        }
+
+        #[test]
+        #[allow(non_snake_case)]
+        fn 启动失败原因不含数字编码() {
+            for code in [0u32, 2, 3, 5, 31, 32, 999] {
+                let reason = shell_error_reason(code);
+                assert!(!reason.contains(&code.to_string()));
+            }
+        }
     }
 } // mod windows_impl
 

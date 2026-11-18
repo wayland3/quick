@@ -451,11 +451,8 @@ fn uwp_candidate(app: UwpApp) -> AppCandidate {
     }
 }
 
-/// 后台刷新周期：ARCHITECTURE §9 规定 v1 用 10 分钟轮询替代 `ReadDirectoryChangesW`
-pub const REFRESH_INTERVAL: Duration = Duration::from_secs(600);
-
-/// 停止检查粒度（保证退出时最多等 1s）
-const STOP_POLL: Duration = Duration::from_secs(1);
+/// 停止检查粒度（保证退出时最多等 100ms）
+const STOP_POLL: Duration = Duration::from_millis(100);
 
 /// 索引重建互斥锁：命令与后台刷新共用，避免并发全量替换
 #[derive(Debug, Clone, Default)]
@@ -517,23 +514,27 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// 后台刷新线程：启动即重建一次，之后每 10 分钟轮询
+/// 后台刷新：启动时重建一次，之后等待停止信号
+///
+/// 刷新策略：启动时后台构建；支持手动触发重建；默认不定时轮询。
 pub struct IndexRefresher {
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
 }
 
 impl IndexRefresher {
-    /// 启动后台线程（立即返回，不阻塞调用方）
+    /// 启动后台线程：立即重建一次索引，然后等待停止信号
     pub fn start(db_path: PathBuf, lock: IndexRebuildLock) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let stop_for_thread = Arc::clone(&stop);
-        let handle = std::thread::spawn(move || loop {
+        let handle = std::thread::spawn(move || {
+            // 启动时立即重建一次
             if let Err(error) = rebuild_index(&db_path, &lock) {
-                log::warn!("app index refresh failed: {}", error);
+                log::warn!("app index initial rebuild failed: {}", error);
             }
-            if !wait_for_next(&stop_for_thread) {
-                break;
+            // 等待停止信号（不定时轮询）
+            while !stop_for_thread.load(Ordering::Relaxed) {
+                std::thread::sleep(STOP_POLL);
             }
         });
 
@@ -551,19 +552,6 @@ impl Drop for IndexRefresher {
             let _ = handle.join();
         }
     }
-}
-
-/// 分片睡眠：停止标志置位后最多 1s 退出
-fn wait_for_next(stop: &AtomicBool) -> bool {
-    let mut slept = Duration::ZERO;
-    while slept < REFRESH_INTERVAL {
-        if stop.load(Ordering::Relaxed) {
-            return false;
-        }
-        std::thread::sleep(STOP_POLL);
-        slept += STOP_POLL;
-    }
-    !stop.load(Ordering::Relaxed)
 }
 
 #[cfg(test)]

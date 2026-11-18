@@ -132,9 +132,9 @@ mod windows_impl {
     use super::*;
     use std::path::PathBuf;
     use windows::core::PWSTR;
-    use windows::Win32::Foundation::{BOOL, FALSE, HWND, LPARAM, TRUE};
+    use windows::Win32::Foundation::{HWND, LPARAM};
     use windows::Win32::Graphics::Gdi::{
-        GetMonitorInfoW, MonitorFromPoint, HMONITOR, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+        GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST,
     };
     use windows::Win32::Security::{
         GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
@@ -144,7 +144,7 @@ mod windows_impl {
         PROCESS_QUERY_LIMITED_INFORMATION,
     };
     use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
-    use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus};
+    use windows::Win32::UI::Input::KeyboardAndMouse::GetFocus;
     use windows::Win32::UI::WindowsAndMessaging::{
         EnumChildWindows, GetCursorPos, GetForegroundWindow, GetWindowThreadProcessId, IsIconic,
         IsWindow, SetForegroundWindow, ShowWindow, SW_RESTORE,
@@ -177,7 +177,7 @@ mod windows_impl {
     }
 
     fn get_process_name(pid: u32) -> Option<String> {
-        let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid) }.ok()?;
+        let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
 
         let mut buf = [0u16; 1024];
         let mut size = buf.len() as u32;
@@ -209,13 +209,16 @@ mod windows_impl {
         Some(name)
     }
 
-    fn detect_uwp_app_name(pid: u32) -> Option<String> {
+    fn detect_uwp_app_name(_pid: u32) -> Option<String> {
         // 简化版：返回 "UWP App" 占位
         Some("UWP App".to_string())
     }
 
     fn check_elevated(pid: u32) -> bool {
-        let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid) }.ok()?;
+        let process = match unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) } {
+            Ok(p) => p,
+            Err(_) => return false,
+        };
         let mut token = windows::Win32::Foundation::HANDLE::default();
         let result = unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) };
         if result.is_err() {
@@ -237,6 +240,11 @@ mod windows_impl {
         result.is_ok() && elevation.TokenIsElevated != 0
     }
 
+    struct FocusState {
+        thread_id: u32,
+        focus: Option<HWND>,
+    }
+
     fn get_focus_child(hwnd: HWND) -> Option<isize> {
         let mut thread_id = 0u32;
         unsafe { GetWindowThreadProcessId(hwnd, Some(&mut thread_id)) };
@@ -245,47 +253,45 @@ mod windows_impl {
         let current_thread = unsafe { GetCurrentThreadId() };
         if current_thread == thread_id {
             let focus = unsafe { GetFocus() };
-            if !focus.is_invalid() && unsafe { IsWindow(focus) }.as_bool() {
+            if !focus.is_invalid() && unsafe { IsWindow(Some(focus)) }.as_bool() {
                 return Some(focus.0 as isize);
             }
         }
 
         // 跨线程：用 EnumChildWindows + GetFocus
-        struct FocusState {
-            thread_id: u32,
-            focus: Option<HWND>,
-        }
-
         let mut state = FocusState {
             thread_id,
             focus: None,
         };
 
         unsafe {
-            EnumChildWindows(
-                hwnd,
+            let _ = EnumChildWindows(
+                Some(hwnd),
                 Some(enum_focus_callback),
                 LPARAM(&mut state as *mut _ as isize),
-            )
-        };
+            );
+        }
 
         state.focus.map(|h| h.0 as isize)
     }
 
-    unsafe extern "system" fn enum_focus_callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    unsafe extern "system" fn enum_focus_callback(
+        hwnd: HWND,
+        lparam: LPARAM,
+    ) -> windows::core::BOOL {
         let state = &mut *(lparam.0 as *mut FocusState);
         let mut thread_id = 0u32;
         GetWindowThreadProcessId(hwnd, Some(&mut thread_id));
 
         if thread_id == state.thread_id {
             let focus = GetFocus();
-            if !focus.is_invalid() && IsWindow(focus).as_bool() {
+            if !focus.is_invalid() && IsWindow(Some(focus)).as_bool() {
                 state.focus = Some(focus);
-                return FALSE; // 停止枚举
+                return windows::core::BOOL(0); // FALSE：停止枚举
             }
         }
 
-        TRUE // 继续枚举
+        windows::core::BOOL(1) // TRUE：继续枚举
     }
 
     pub fn current_process_elevated_windows() -> bool {
@@ -316,15 +322,15 @@ mod windows_impl {
         result.is_ok() && elevation.TokenIsElevated != 0
     }
 
-    pub fn restore_windows(prev: &ForegroundWindow, timeout_ms: u32) -> Result<(), AppError> {
+    pub fn restore_windows(prev: &ForegroundWindow, _timeout_ms: u32) -> Result<(), AppError> {
         let hwnd = HWND(prev.hwnd as *mut _);
-        if !unsafe { IsWindow(hwnd) }.as_bool() {
+        if !unsafe { IsWindow(Some(hwnd)) }.as_bool() {
             return Ok(());
         }
 
         // 如果窗口最小化，先恢复
         if prev.is_minimized {
-            unsafe { ShowWindow(hwnd, SW_RESTORE) };
+            let _ = unsafe { ShowWindow(hwnd, SW_RESTORE) };
         }
 
         // 附加线程输入
@@ -332,7 +338,7 @@ mod windows_impl {
         let target_thread = unsafe { GetWindowThreadProcessId(hwnd, None) };
 
         if current_thread != target_thread {
-            unsafe { AttachThreadInput(current_thread, target_thread, TRUE) };
+            let _ = unsafe { AttachThreadInput(current_thread, target_thread, true) };
         }
 
         // 设置前台窗口
@@ -340,7 +346,7 @@ mod windows_impl {
 
         // 分离线程输入
         if current_thread != target_thread {
-            unsafe { AttachThreadInput(current_thread, target_thread, FALSE) };
+            let _ = unsafe { AttachThreadInput(current_thread, target_thread, false) };
         }
 
         if !result.as_bool() {
@@ -355,7 +361,7 @@ mod windows_impl {
     }
 
     pub fn get_cursor_monitor_windows() -> Result<MonitorInfo, AppError> {
-        let mut pos = windows::Win32::Graphics::Gdi::POINT { x: 0, y: 0 };
+        let mut pos = windows::Win32::Foundation::POINT { x: 0, y: 0 };
         unsafe { GetCursorPos(&mut pos) }?;
 
         let monitor = unsafe { MonitorFromPoint(pos, MONITOR_DEFAULTTONEAREST) };
@@ -364,7 +370,7 @@ mod windows_impl {
             ..Default::default()
         };
 
-        unsafe { GetMonitorInfoW(monitor, &mut info) };
+        let _ = unsafe { GetMonitorInfoW(monitor, &mut info) };
 
         let mut dpi_x = 96u32;
         let mut dpi_y = 96u32;
