@@ -72,26 +72,24 @@ quick/
 
 ## 9. 文档地图
 
-### 产品文档（按功能）
+### 产品文档（做什么）
 
-| 想知道                  | 看                          | 何时必读          |
-|-------------------------|-----------------------------|-------------------|
-| 全局约定（热键、浮层、键盘） | `docs/features/global.md`    | 改全局行为时      |
-| 启动器功能规格          | `docs/features/launcher.md`     | 改启动器时        |
-| 剪贴板历史功能规格      | `docs/features/clipboard.md`    | 改剪贴板时        |
-| 设置项规格              | `docs/features/settings.md`     | 改设置时          |
-| 边界与限制              | `docs/features/limitations.md`  | 遇到限制时        |
+| 想知道                  | 看                              | 何时必读          |
+|-------------------------|---------------------------------|-------------------|
+| 全局约定（热键、浮层、键盘） | `docs/product/features/global.md`    | 改全局行为时      |
+| 启动器功能规格          | `docs/product/features/launcher.md`     | 改启动器时        |
+| 剪贴板历史功能规格      | `docs/product/features/clipboard.md`    | 改剪贴板时        |
+| 设置项规格              | `docs/product/features/settings.md`     | 改设置时          |
 
-### 技术文档（按关注点）
+### 设计文档（怎么做）
 
 | 想知道                        | 看                          | 何时必读                |
 |-------------------------------|-----------------------------|-------------------------|
-| 架构、线程、窗口、错误模型    | `docs/ARCHITECTURE.md`      | 首次进入项目 + 改架构时 |
-| 数据库表结构与迁移            | `docs/DATABASE.md`          | 改数据库时              |
-| IPC 接口契约                  | `docs/IPC.md`               | 改接口时                |
-| 检索排名与应用索引算法        | `docs/ALGORITHM.md`         | 改算法时                |
-| 平台特定 API 怎么写、有哪些坑 | `docs/PLATFORM-NOTES.md`    | 碰 `platform/` 前       |
-| 改动后如何验证                | `docs/VERIFICATION.md`      | **每次改完代码后**      |
+| 架构、线程、窗口、错误模型    | `docs/design/ARCHITECTURE.md`      | 首次进入项目 + 改架构时 |
+| 数据库表结构与迁移            | `docs/design/DATABASE.md`          | 改数据库时              |
+| IPC 接口契约                  | `docs/design/IPC.md`               | 改接口时                |
+| 检索排名与应用索引算法        | `docs/design/ALGORITHM.md`         | 改算法时                |
+| 发布测试清单                  | `docs/design/RELEASE-TEST.md`      | 发布前                  |
 | 现在做到哪了                  | `TASKS.md`                  | 每次会话开始            |
 
 **上下文预算**：不要一次全读。只读当前任务相关的文档，feature-slice 技能第 2 步有具体指引。

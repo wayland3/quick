@@ -26,7 +26,6 @@ CREATE TABLE clipboard_item (
   blob_path      TEXT,
   thumb_path     TEXT,
   file_list      TEXT,              -- JSON: [{path,exists}]
-  source_app     TEXT,
   byte_size      INTEGER NOT NULL DEFAULT 0,
   created_at     INTEGER NOT NULL,  -- unix ms
   last_copied_at INTEGER NOT NULL,  -- unix ms，TTL 依据
