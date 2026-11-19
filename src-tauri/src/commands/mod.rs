@@ -7,6 +7,7 @@ use crate::services::hotkey::{HotkeyAction, HotkeyManager, HotkeyProbeResult, Ho
 use crate::services::window::{
     HideReason, OverlayManager, OverlayMode, ResizePayload, ShowPayload,
 };
+use std::path::PathBuf;
 use tauri::{Manager, Window};
 use tauri_plugin_autostart::ManagerExt;
 
@@ -154,4 +155,37 @@ pub async fn hotkey_resume(app: tauri::AppHandle, action: String) -> Result<(), 
         _ => return Err(AppError::Internal(format!("invalid action: {}", action))),
     };
     hotkey_manager.resume(action_enum)
+}
+
+/// 实际数据目录：优先用运行时数据库路径的父目录，回退到默认推导
+fn resolve_data_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, AppError> {
+    if let Some(path) = app
+        .try_state::<crate::services::storage::DbPath>()
+        .map(|state| state.as_path().to_path_buf())
+    {
+        if let Some(parent) = path.parent() {
+            return Ok(parent.to_path_buf());
+        }
+    }
+    crate::services::storage::ClipboardStorage::default_data_dir()
+}
+
+/// 数据目录的绝对路径（设置页展示用）
+#[tauri::command]
+pub async fn app_data_dir<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<String, AppError> {
+    let dir = resolve_data_dir(&app)?;
+    Ok(dir.to_string_lossy().into_owned())
+}
+
+/// 用系统文件管理器打开数据目录
+#[tauri::command]
+pub async fn app_data_dir_open<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<(), AppError> {
+    use tauri_plugin_opener::OpenerExt;
+
+    let dir = resolve_data_dir(&app)?;
+    app.opener()
+        .open_path(dir.to_string_lossy().into_owned(), None::<&str>)
+        .map_err(|e| AppError::Internal(format!("打开数据目录失败：{}", e)))
 }

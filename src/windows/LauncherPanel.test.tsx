@@ -72,6 +72,31 @@ describe('启动器面板', () => {
     );
   });
 
+  it('Enter 执行内置命令并调用 launcher_execute', async () => {
+    // 回归：前端曾把 command 类结果拦在本地提示里，导致 `> 命令` 永远不生效
+    mockResult({
+      items: [
+        {
+          key: 'cmd:锁屏',
+          title: '锁屏',
+          subtitle: '锁定屏幕',
+          kind: 'command',
+          icon: null,
+          score: 1,
+        },
+      ],
+      hint: null,
+    });
+    render(<LauncherPanel />);
+
+    await waitFor(() => expect(screen.getByText('锁屏')).toBeTruthy());
+    fireEvent.keyDown(screen.getByLabelText('搜索应用'), { key: 'Enter' });
+
+    await waitFor(() =>
+      expect(ipc.launcherExecute).toHaveBeenCalledWith('cmd:锁屏'),
+    );
+  });
+
   it('打开失败时底部显示错误且面板保留', async () => {
     vi.mocked(ipc.launcherExecute).mockRejectedValue(
       new Error('无法打开该应用，请确认它仍然安装'),

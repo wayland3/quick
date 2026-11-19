@@ -1,9 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ipc } from '../lib/ipc';
 import type { LauncherItem } from '../lib/launcher';
 
 const DEBOUNCE_MS = 80;
-const HINT_MS = 3000;
 const EMPTY_QUERY_PLACEHOLDER = '搜索应用';
 
 function errorMessage(err: unknown, fallback = '搜索失败，请稍后重试'): string {
@@ -30,30 +29,16 @@ export function LauncherPanel() {
   const [items, setItems] = useState<LauncherItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [hint, setHint] = useState('');
   const [selected, setSelected] = useState(0);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const genRef = useRef(0);
-  const hintTimerRef = useRef<number | undefined>(undefined);
   const selectedRef = useRef(0);
   const launchingRef = useRef(false);
-
-  const showHint = useCallback((message: string) => {
-    setHint(message);
-    if (hintTimerRef.current) window.clearTimeout(hintTimerRef.current);
-    hintTimerRef.current = window.setTimeout(() => setHint(''), HINT_MS);
-  }, []);
 
   // 打开面板即聚焦输入框
   useEffect(() => {
     inputRef.current?.focus();
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      if (hintTimerRef.current) window.clearTimeout(hintTimerRef.current);
-    };
   }, []);
 
   // 选中项变化时自动滚动到可见区域
@@ -100,10 +85,6 @@ export function LauncherPanel() {
 
   const open = (item: LauncherItem | undefined) => {
     if (!item) return;
-    if (item.kind === 'command') {
-      showHint('内置命令将在 T-306 接入');
-      return;
-    }
     if (launchingRef.current) return;
     launchingRef.current = true;
     setError('');
@@ -197,7 +178,7 @@ export function LauncherPanel() {
 
       <footer className="qw-footer" aria-live="polite">
         <span className="qw-footer-text">
-          {error || hint || '↑↓ 选择 · Enter 打开 · Esc 关闭'}
+          {error || '↑↓ 选择 · Enter 打开 · Esc 关闭'}
         </span>
       </footer>
     </section>

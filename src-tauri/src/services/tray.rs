@@ -66,7 +66,7 @@ fn show_overlay(app: &AppHandle, mode: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-fn show_settings(app: &AppHandle) -> Result<(), AppError> {
+pub(crate) fn show_settings(app: &AppHandle) -> Result<(), AppError> {
     if let Some(window) = app.get_webview_window("settings") {
         window.show()?;
         window.set_focus()?;

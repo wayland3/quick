@@ -12,6 +12,8 @@ pub mod focus;
 pub mod imaging;
 #[cfg(target_os = "windows")]
 pub mod input;
+#[cfg(target_os = "windows")]
+pub mod system;
 
 #[cfg(target_os = "linux")]
 pub mod apps;
@@ -23,6 +25,8 @@ pub mod focus;
 pub mod imaging;
 #[cfg(target_os = "linux")]
 pub mod input;
+#[cfg(target_os = "linux")]
+pub mod system;
 
 // Win32 平台层：剪贴板、热键、焦点、应用列表、文件索引
 // 所有 unsafe 调用必须在此模块内，并有 SAFETY 注释

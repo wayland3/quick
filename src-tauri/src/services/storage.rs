@@ -299,7 +299,7 @@ impl ClipboardStorage {
     }
 
     /// 默认数据目录：`quick`
-    fn default_data_dir() -> Result<PathBuf, AppError> {
+    pub fn default_data_dir() -> Result<PathBuf, AppError> {
         let app_data = dirs::data_dir()
             .ok_or_else(|| AppError::Storage("failed to get data directory".to_string()))?;
         Ok(app_data.join("quick"))
@@ -1884,6 +1884,16 @@ mod tests {
 
         assert!(blob_path.is_none(), "超限图片不应写 blob");
         assert_eq!(truncated, 1);
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn 默认数据目录以quick结尾() {
+        let dir = ClipboardStorage::default_data_dir().expect("default data dir");
+        assert_eq!(
+            dir.file_name().and_then(|name| name.to_str()),
+            Some("quick")
+        );
     }
 
     #[test]

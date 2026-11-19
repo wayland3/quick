@@ -430,6 +430,27 @@ function ClipboardTab({
           <MaxItemsInput settings={settings} onUpdate={onUpdate} />
         </div>
 
+        {/* blob 预算 */}
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex-1">
+            <div className="text-sm font-medium text-[var(--text)]">图片存储预算</div>
+            <div className="mt-1 text-xs text-[var(--text-muted)]">
+              图片占用的磁盘空间上限（100-2000 MB）
+            </div>
+          </div>
+          <select
+            value={settings.blob_budget_mb}
+            onChange={(e) => onUpdate('blob_budget_mb', Number(e.target.value))}
+            className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-sm text-[var(--text)] focus:border-[var(--accent)] focus:outline-none"
+          >
+            {[100, 200, 500, 1000, 2000].map((mb) => (
+              <option key={mb} value={mb}>
+                {mb} MB
+              </option>
+            ))}
+          </select>
+        </div>
+
         {/* 粘贴后还原 */}
         <div className="flex items-start justify-between gap-4">
           <div className="flex-1">
@@ -550,6 +571,25 @@ function PrivacyTab() {
 }
 
 function AboutTab() {
+  const [dataDir, setDataDir] = useState<string | null>(null);
+  const [dirError, setDirError] = useState<string | null>(null);
+
+  useEffect(() => {
+    ipc
+      .appDataDir()
+      .then(setDataDir)
+      .catch((err) => setDirError(err instanceof Error ? err.message : String(err)));
+  }, []);
+
+  const openDataDir = async () => {
+    setDirError(null);
+    try {
+      await ipc.appDataDirOpen();
+    } catch (err) {
+      setDirError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   return (
     <div className="max-w-[560px]">
       <h2 className="mb-6 text-base font-semibold text-[var(--text)]">关于</h2>
@@ -562,9 +602,16 @@ function AboutTab() {
 
         <div className="rounded-lg border border-[var(--border)] p-4">
           <div className="mb-2 text-sm font-medium text-[var(--text)]">数据目录</div>
-          <div className="text-xs text-[var(--text-muted)]">
-            ~/Library/Application Support/quick (macOS)
+          <div className="break-all text-xs text-[var(--text-muted)]">
+            {dataDir ?? '读取中…'}
           </div>
+          {dirError && <div className="mt-1 text-xs text-red-500">{dirError}</div>}
+          <button
+            onClick={openDataDir}
+            className="mt-3 rounded-lg border border-[var(--border)] px-3 py-1.5 text-sm text-[var(--text)] hover:bg-[var(--surface-hover)]"
+          >
+            打开目录
+          </button>
         </div>
 
         <div className="rounded-lg border border-[var(--border)] p-4">

@@ -188,4 +188,12 @@ export const ipc = {
   async settingsReset(): Promise<Settings> {
     return invokeWrapper<Settings>('settings_reset');
   },
+
+  async appDataDir(): Promise<string> {
+    return invokeWrapper<string>('app_data_dir');
+  },
+
+  async appDataDirOpen(): Promise<void> {
+    return invokeWrapper<void>('app_data_dir_open');
+  },
 };

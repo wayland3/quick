@@ -28,6 +28,7 @@ pub fn run() {
             Some(vec!["--hidden"]),
         ))
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(
             tauri_plugin_log::Builder::new()
                 .target(tauri_plugin_log::Target::new(
@@ -55,6 +56,8 @@ pub fn run() {
             commands::hotkey_rebind,
             commands::hotkey_suspend,
             commands::hotkey_resume,
+            commands::app_data_dir,
+            commands::app_data_dir_open,
             commands::clipboard::clipboard_list,
             commands::clipboard::clipboard_get,
             commands::clipboard::clipboard_set_pinned,
@@ -119,6 +122,10 @@ pub fn run() {
                     serde_json::json!({ "accelerator": accelerator }),
                 );
             }
+            // 浮层启动时不可见，事件没人看得到，补一个系统通知
+            if let Err(e) = services::notify::notify_hotkey_failed(app.handle(), &startup_failed) {
+                log::warn!("notify hotkey failure failed: {}", e);
+            }
 
             // 开机自启对账：以 settings 为准应用一次（外部禁用后重启会自动校正）
             let autolaunch = app.autolaunch();
@@ -153,7 +160,7 @@ pub fn run() {
                 }
             }
 
-            // 应用索引：后台线程启动即建一次，之后每 10 分钟轮询（不阻塞 UI）
+            // 应用索引：后台线程启动即建一次；之后不轮询，靠启动器 `> 重建索引` 手动触发
             let rebuild_lock = app
                 .state::<services::appindex::IndexRebuildLock>()
                 .inner()

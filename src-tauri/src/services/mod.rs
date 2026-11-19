@@ -1,7 +1,9 @@
 pub mod appindex;
 pub mod clipboard;
+pub mod commands;
 pub mod hotkey;
 pub mod logging;
+pub mod notify;
 pub mod paste;
 pub mod query;
 pub mod ranking;

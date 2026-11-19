@@ -19,6 +19,7 @@ Quick 是一个跨平台常驻的效率工具：快速找到应用，粘贴板�
 4. **交叉评审**。根据任务先出设计文档，选择一个模型来设计，然后由另一个模型评价这个设计，并改进。标注在 `TASKS.md`
 5. **记录日志**。在关键流程处记录日志，以便排查问题
 6. **明确问题**。遇到问题不要猜，停下来问我
+7. **文档同步**。改动完成后同步两边文档：行为/规格变化写进 `docs/product/features/` 对应功能文档；实现方案/机制变化写进 `docs/design/` 对应设计文档。只写结论与原因，不写流水账。
 
 常用命令见 `README.md`。提交前必须 `npm.cmd run verify` 全绿。
 
@@ -81,16 +82,23 @@ quick/
 | 剪贴板历史功能规格           | `docs/product/features/clipboard.md` | 改剪贴板时   |
 | 设置项规格                   | `docs/product/features/settings.md`  | 改设置时     |
 
-### 设计文档（怎么做） 拒绝废话，描述清楚怎么做，复杂情况要描述为什么这么做，当设计文档已经完成，要归档
+### 设计文档（怎么做） 拒绝废话，描述清楚怎么做，复杂情况要描述为什么这么做
 
-| 想知道                     | 看                                | 何时必读                |
-|----------------------------|-----------------------------------|-------------------------|
-| 架构、线程、窗口、错误模型 | `docs/design/ARCHITECTURE.md`     | 首次进入项目 + 改架构时 |
-| 数据库表结构与迁移         | `docs/design/DATABASE.md`         | 改数据库时              |
-| IPC 接口契约               | `docs/design/IPC.md`              | 改接口时                |
-| 检索排名与应用索引算法     | `docs/design/ALGORITHM.md`        | 改算法时                |
-| 待实现功能设计             | `docs/design/pending-features.md` | 实现新功能前            |
-| 发布测试清单               | `docs/design/RELEASE-TEST.md`     | 发布前                  |
-| 现在做到哪了               | `TASKS.md`                        | 每次会话开始            |
+| 想知道                     | 看                            | 何时必读                |
+|----------------------------|-------------------------------|-------------------------|
+| 架构、线程、窗口、错误模型 | `docs/design/ARCHITECTURE.md` | 首次进入项目 + 改架构时 |
+| 数据库表结构与迁移         | `docs/design/DATABASE.md`     | 改数据库时              |
+| IPC 接口契约               | `docs/design/IPC.md`          | 改接口时                |
+| 发布测试清单               | `docs/design/RELEASE-TEST.md` | 发布前                  |
+| 现在做到哪了               | `TASKS.md`                    | 每次会话开始            |
 
-**上下文预算**：不要一次全读。只读当前任务相关的文档，feature-slice 技能第 2 步有具体指引。
+### 功能设计（每个产品功能对应一份）
+
+| 产品功能 | 设计文档 |
+|----------|---------|
+| 全局约定 | `docs/design/features/global.md` |
+| 启动器 | `docs/design/features/launcher.md` |
+| 剪贴板历史 | `docs/design/features/clipboard.md` |
+| 设置项 | `docs/design/features/settings.md` |
+
+改某个功能时，先读对应的产品文档，再读同名的功能设计文档；跨功能的架构/数据库/IPC 按上表取。

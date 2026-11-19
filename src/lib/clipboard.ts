@@ -51,6 +51,7 @@ export interface Settings {
   clipboard_hotkey: string;
   retention_days: number;
   max_items: number;
+  blob_budget_mb: number;
   record_text: boolean;
   record_image: boolean;
   record_files: boolean;

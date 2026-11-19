@@ -92,6 +92,7 @@ describe('IPC 契约', () => {
         clipboard_hotkey: 'Alt+V',
         retention_days: 15,
         max_items: 10000,
+        blob_budget_mb: 500,
         record_text: true,
         record_image: true,
         record_files: true,

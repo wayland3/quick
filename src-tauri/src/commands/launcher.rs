@@ -6,6 +6,7 @@
 use crate::error::AppError;
 use crate::models::{AppIndexRebuildResult, LauncherQueryResult};
 use crate::services::appindex::{rebuild_index, IndexRebuildLock};
+use crate::services::commands::BuiltinCommand;
 use crate::services::ranking::{self, DEFAULT_LIMIT, MAX_LIMIT};
 use crate::services::storage::{ClipboardStorage, DbPath, UsageStat};
 use crate::services::window::{HideReason, OverlayManager};
@@ -40,11 +41,17 @@ pub async fn launcher_query(
     query: String,
     limit: Option<usize>,
 ) -> Result<LauncherQueryResult, AppError> {
+    let limit = limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
+
+    // 检查是否是内置命令查询（以 ">" 开头）
+    if query.trim().starts_with('>') {
+        return query_builtin_commands(&query, limit);
+    }
+
     let db_path = app
         .try_state::<DbPath>()
         .map(|state| state.as_path().to_path_buf())
         .ok_or_else(|| AppError::Storage("数据库尚未就绪".to_string()))?;
-    let limit = limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
 
     let result = tauri::async_runtime::spawn_blocking(move || {
         let storage = ClipboardStorage::open_readonly_at(&db_path)?;
@@ -64,7 +71,35 @@ pub async fn launcher_query(
     Ok(result)
 }
 
-/// 打开启动器选中的应用
+/// 查询内置命令
+fn query_builtin_commands(query: &str, limit: usize) -> Result<LauncherQueryResult, AppError> {
+    use crate::models::{LauncherItem, LauncherKind};
+
+    let cmd_part = query.trim().trim_start_matches('>').trim().to_lowercase();
+    let mut items: Vec<LauncherItem> = BuiltinCommand::all()
+        .iter()
+        .filter(|cmd| {
+            cmd_part.is_empty()
+                || cmd.name().to_lowercase().contains(&cmd_part)
+                || format!("> {}", cmd.name())
+                    .to_lowercase()
+                    .contains(&cmd_part)
+        })
+        .map(|cmd| LauncherItem {
+            key: format!("cmd:{}", cmd.name()),
+            title: cmd.name().to_string(),
+            subtitle: Some(cmd.description().to_string()),
+            kind: LauncherKind::Command,
+            icon: None,
+            score: 1.0,
+        })
+        .collect();
+
+    items.truncate(limit);
+    Ok(LauncherQueryResult { items, hint: None })
+}
+
+/// 打开启动器选中的应用或执行内置命令
 ///
 /// 顺序为「先启动、成功后再隐藏浮层」：启动失败时面板保持可见，可继续换一条重试。
 #[tauri::command]
@@ -73,6 +108,11 @@ pub async fn launcher_execute(
     window: tauri::Window,
     key: String,
 ) -> Result<(), AppError> {
+    // 检查是否是内置命令（key 以 "cmd:" 开头）
+    if key.starts_with("cmd:") {
+        return execute_builtin_command(&app, &key).await;
+    }
+
     let db_path = app
         .try_state::<DbPath>()
         .map(|state| state.as_path().to_path_buf())
@@ -96,7 +136,9 @@ pub async fn launcher_execute(
                 crate::platform::apps::launch_win32(&launch_row.target, launch_row.args.as_deref())
             }
             "uwp" => crate::platform::apps::launch_uwp(&launch_row.target),
-            "command" => Err(AppError::LaunchFailed("内置命令尚未接入".to_string())),
+            "command" => Err(AppError::LaunchFailed(
+                "内置命令不应从应用索引执行".to_string(),
+            )),
             _ => Err(AppError::LaunchFailed("不支持的应用类型".to_string())),
         }
     })
@@ -128,6 +170,72 @@ pub async fn launcher_execute(
                 Ok(Ok(())) => {}
             }
         });
+    }
+
+    Ok(())
+}
+
+/// 执行内置命令
+async fn execute_builtin_command(app: &tauri::AppHandle, key: &str) -> Result<(), AppError> {
+    let cmd_name = key.trim_start_matches("cmd:");
+    let cmd = BuiltinCommand::all()
+        .iter()
+        .find(|c| c.name() == cmd_name)
+        .ok_or_else(|| AppError::LaunchFailed(format!("未知命令: {}", cmd_name)))?;
+
+    log::info!("execute builtin command: {:?}", cmd);
+
+    match cmd {
+        BuiltinCommand::LockScreen => {
+            tauri::async_runtime::spawn_blocking(crate::platform::system::lock_screen)
+                .await
+                .map_err(|e| AppError::Internal(format!("lock_screen join failed: {}", e)))??;
+        }
+        BuiltinCommand::Sleep => {
+            tauri::async_runtime::spawn_blocking(crate::platform::system::sleep)
+                .await
+                .map_err(|e| AppError::Internal(format!("sleep join failed: {}", e)))??;
+        }
+        BuiltinCommand::OpenSettings => {
+            // 设置窗口是懒创建的：没从托盘打开过时 get_webview_window 返回 None，
+            // 直接复用托盘入口，保证首次执行也能创建并聚焦。
+            crate::services::tray::show_settings(app)?;
+        }
+        BuiltinCommand::ClearClipboard => {
+            let db_path = app
+                .try_state::<DbPath>()
+                .map(|state| state.as_path().to_path_buf())
+                .ok_or_else(|| AppError::Storage("数据库尚未就绪".to_string()))?;
+            tauri::async_runtime::spawn_blocking(move || {
+                let mut storage = ClipboardStorage::open_write_at(&db_path)?;
+                storage.clear_history(true)
+            })
+            .await
+            .map_err(|e| AppError::Internal(format!("clear join failed: {}", e)))??;
+        }
+        BuiltinCommand::RebuildIndex => {
+            let db_path = app
+                .try_state::<DbPath>()
+                .map(|state| state.as_path().to_path_buf())
+                .ok_or_else(|| AppError::Storage("数据库尚未就绪".to_string()))?;
+            let lock = app
+                .try_state::<IndexRebuildLock>()
+                .map(|state| state.inner().clone())
+                .unwrap_or_default();
+            tauri::async_runtime::spawn_blocking(move || rebuild_index(&db_path, &lock))
+                .await
+                .map_err(|e| AppError::Internal(format!("rebuild join failed: {}", e)))??;
+        }
+        BuiltinCommand::Quit => {
+            app.exit(0);
+        }
+    }
+
+    // 隐藏浮层
+    if let Some(window) = app.get_webview_window("overlay") {
+        if let Err(error) = window.hide() {
+            log::warn!("hide overlay after command failed: {}", error);
+        }
     }
 
     Ok(())

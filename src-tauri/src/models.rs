@@ -83,6 +83,9 @@ pub struct Settings {
     /// 条数上限：1000–50000
     #[serde(default = "default_max_items")]
     pub max_items: i32,
+    /// blob 总预算（MB）：100–2000
+    #[serde(default = "default_blob_budget_mb")]
+    pub blob_budget_mb: i32,
     /// 是否记录文本（含富文本）
     #[serde(default = "default_true")]
     pub record_text: bool,
@@ -125,6 +128,10 @@ fn default_retention_days() -> i32 {
 fn default_max_items() -> i32 {
     10_000
 }
+/// blob 预算默认 500MB
+fn default_blob_budget_mb() -> i32 {
+    500
+}
 /// 开关默认开
 fn default_true() -> bool {
     true
@@ -145,6 +152,7 @@ impl Default for Settings {
             clipboard_hotkey: default_clipboard_hotkey(),
             retention_days: default_retention_days(),
             max_items: default_max_items(),
+            blob_budget_mb: default_blob_budget_mb(),
             record_text: true,
             record_image: true,
             record_files: true,
@@ -163,6 +171,9 @@ impl Settings {
     /// 条数上限范围
     pub const MIN_ITEMS: i32 = 1000;
     pub const MAX_ITEMS_LIMIT: i32 = 50000;
+    /// blob 预算范围（MB）
+    pub const MIN_BLOB_BUDGET_MB: i32 = 100;
+    pub const MAX_BLOB_BUDGET_MB: i32 = 2000;
 
     /// 校验全部字段；错误信息为中文，用于 command 层拒绝非法 patch
     pub fn validate(&self) -> Result<(), String> {
@@ -188,6 +199,14 @@ impl Settings {
                 "条数上限需在 {} 到 {} 之间",
                 Self::MIN_ITEMS,
                 Self::MAX_ITEMS_LIMIT
+            ));
+        }
+
+        if !(Self::MIN_BLOB_BUDGET_MB..=Self::MAX_BLOB_BUDGET_MB).contains(&self.blob_budget_mb) {
+            return Err(format!(
+                "blob 预算需在 {} 到 {} MB 之间",
+                Self::MIN_BLOB_BUDGET_MB,
+                Self::MAX_BLOB_BUDGET_MB
             ));
         }
 
@@ -341,6 +360,35 @@ mod settings_tests {
             ..Settings::default()
         };
         assert!(high.validate().is_err());
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn blob预算越界被拒绝() {
+        let low = Settings {
+            blob_budget_mb: 99,
+            ..Settings::default()
+        };
+        assert!(low.validate().is_err());
+
+        let high = Settings {
+            blob_budget_mb: 2001,
+            ..Settings::default()
+        };
+        assert!(high.validate().is_err());
+
+        assert!(Settings {
+            blob_budget_mb: 100,
+            ..Settings::default()
+        }
+        .validate()
+        .is_ok());
+        assert!(Settings {
+            blob_budget_mb: 2000,
+            ..Settings::default()
+        }
+        .validate()
+        .is_ok());
     }
 
     #[test]

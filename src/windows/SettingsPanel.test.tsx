@@ -11,6 +11,8 @@ vi.mock('../lib/ipc', () => ({
     hotkeyProbe: vi.fn(),
     hotkeySuspend: vi.fn(),
     hotkeyResume: vi.fn(),
+    appDataDir: vi.fn(),
+    appDataDirOpen: vi.fn(),
   },
 }));
 
@@ -19,6 +21,7 @@ const settings: Settings = {
   clipboard_hotkey: 'Alt+V',
   retention_days: 15,
   max_items: 10000,
+  blob_budget_mb: 500,
   record_text: true,
   record_image: true,
   record_files: true,
@@ -111,5 +114,47 @@ describe('设置窗口热键页', () => {
     await waitFor(() => {
       expect(ipc.hotkeyProbe).toHaveBeenCalledTimes(3);
     });
+  });
+});
+
+describe('设置窗口关于页', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(ipc.settingsGet).mockResolvedValue(settings);
+    vi.mocked(ipc.hotkeyProbe).mockImplementation(async (accelerator: string) => ({
+      accelerator,
+      available: true,
+      reason: 'available' as const,
+      message: '当前可用',
+    }));
+    vi.mocked(ipc.hotkeySuspend).mockResolvedValue(undefined);
+    vi.mocked(ipc.hotkeyResume).mockResolvedValue(undefined);
+    vi.mocked(ipc.appDataDir).mockResolvedValue('C:\\Users\\me\\AppData\\Roaming\\quick');
+    vi.mocked(ipc.appDataDirOpen).mockResolvedValue(undefined);
+  });
+
+  it('展示后端返回的真实数据目录', async () => {
+    render(<SettingsPanel />);
+    await waitFor(() => expect(screen.getByText('常规')).toBeDefined());
+
+    fireEvent.click(screen.getByText('关于'));
+
+    await waitFor(() => {
+      expect(screen.getByText('C:\\Users\\me\\AppData\\Roaming\\quick')).toBeDefined();
+    });
+    // 不应再出现写死的 macOS 路径
+    expect(screen.queryByText(/Library\/Application Support/)).toBeNull();
+  });
+
+  it('点击打开目录调用后端', async () => {
+    render(<SettingsPanel />);
+    await waitFor(() => expect(screen.getByText('常规')).toBeDefined());
+
+    fireEvent.click(screen.getByText('关于'));
+    await waitFor(() => expect(screen.getByText('打开目录')).toBeDefined());
+
+    fireEvent.click(screen.getByText('打开目录'));
+
+    await waitFor(() => expect(ipc.appDataDirOpen).toHaveBeenCalled());
   });
 });

@@ -5,7 +5,7 @@
 
 use crate::models::Settings;
 
-/// blob 总预算（500MB，PRD 6.5 固定值，不随设置变化）
+/// blob 总预算默认值（500MB，用于 Settings 未指定时的兜底）
 pub const BLOB_BUDGET_BYTES: i64 = 500 * 1024 * 1024;
 
 /// 定时清理间隔：6 小时
@@ -34,7 +34,7 @@ impl RetentionPolicy {
         Self {
             ttl_days: settings.retention_days,
             max_items: i64::from(settings.max_items),
-            blob_budget: BLOB_BUDGET_BYTES,
+            blob_budget: i64::from(settings.blob_budget_mb) * 1024 * 1024,
         }
     }
 
@@ -97,5 +97,16 @@ mod tests {
         assert_eq!(policy.ttl_days, 15);
         assert_eq!(policy.max_items, 10_000);
         assert_eq!(policy.blob_budget, 500 * 1024 * 1024);
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn blob预算随设置变化() {
+        let custom = Settings {
+            blob_budget_mb: 1024,
+            ..Settings::default()
+        };
+        let policy = RetentionPolicy::from_settings(&custom);
+        assert_eq!(policy.blob_budget, 1024 * 1024 * 1024);
     }
 }
