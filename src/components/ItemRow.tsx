@@ -13,7 +13,7 @@ interface ItemRowProps {
 
 /** 列表行（44px 单行，UI-SPEC §4.3） */
 export function ItemRow({ item, selected, onSelect }: ItemRowProps) {
-  const meta = [item.source_app || '未知来源', formatRelativeTime(item.last_copied_at)];
+  const meta = [formatRelativeTime(item.last_copied_at)];
 
   return (
     <div

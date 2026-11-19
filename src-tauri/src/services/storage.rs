@@ -20,18 +20,18 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// 列表查询列（不取 `text_body`，遵守 §6.1「列表只返回 preview」）
-const LIST_COLUMNS: &str = "id, kind, preview, source_app, created_at, last_copied_at, \
+const LIST_COLUMNS: &str = "id, kind, preview, created_at, last_copied_at, \
                             copy_count, pinned, sensitive, truncated, byte_size, thumb_path";
 
 /// FTS 联表查询列（需带 `c.` 前缀）
-const LIST_COLUMNS_FTS: &str = "c.id, c.kind, c.preview, c.source_app, c.created_at, \
+const LIST_COLUMNS_FTS: &str = "c.id, c.kind, c.preview, c.created_at, \
                                 c.last_copied_at, c.copy_count, c.pinned, c.sensitive, \
                                 c.truncated, c.byte_size, c.thumb_path";
 
 /// 详情查询列
 const DETAIL_COLUMNS: &str = "id, kind, preview, text_body, html, rtf, file_list, blob_path, \
                               thumb_path, byte_size, created_at, last_copied_at, copy_count, \
-                              pinned, truncated, source_app";
+                              pinned, truncated";
 
 /// 预览最大字符数（按字符计，避免截断多字节字符）
 const PREVIEW_MAX_CHARS: usize = 512;
@@ -491,22 +491,11 @@ impl ClipboardStorage {
         tx.execute(
             "INSERT INTO clipboard_item (
                 kind, hash, preview, text_body, html, rtf, blob_path, thumb_path,
-                file_list, source_app, source_title, byte_size, created_at, last_copied_at,
+                file_list, byte_size, created_at, last_copied_at,
                 copy_count, pinned, sensitive, truncated
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?9, ?10, ?11, ?12, ?12, 1, 0, 0, ?13)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?9, ?10, ?10, 1, 0, 0, ?11)",
             params![
-                kind,
-                hash,
-                preview,
-                text_body,
-                html,
-                rtf,
-                blob_path,
-                file_list,
-                entry.source_app,
-                entry.source_title,
-                byte_size,
-                now,
+                kind, hash, preview, text_body, html, rtf, blob_path, file_list, byte_size, now,
                 truncated
             ],
         )
@@ -1472,15 +1461,14 @@ fn map_list_item(row: &Row<'_>) -> Result<ClipboardItem, AppError> {
         id: column(row, 0)?,
         kind: kind_from_db(&kind_text)?,
         preview: column(row, 2)?,
-        source_app: column(row, 3)?,
-        created_at: column(row, 4)?,
-        last_copied_at: column(row, 5)?,
-        copy_count: column(row, 6)?,
-        pinned: column::<i64>(row, 7)? != 0,
-        sensitive: column::<i64>(row, 8)? != 0,
-        truncated: column::<i64>(row, 9)? != 0,
-        byte_size: column(row, 10)?,
-        thumb_path: column(row, 11)?,
+        created_at: column(row, 3)?,
+        last_copied_at: column(row, 4)?,
+        copy_count: column(row, 5)?,
+        pinned: column::<i64>(row, 6)? != 0,
+        sensitive: column::<i64>(row, 7)? != 0,
+        truncated: column::<i64>(row, 8)? != 0,
+        byte_size: column(row, 9)?,
+        thumb_path: column(row, 10)?,
     })
 }
 
@@ -1522,7 +1510,6 @@ fn map_detail(row: &Row<'_>, data_dir: &Path) -> Result<ClipboardDetail, AppErro
         copy_count: column(row, 12)?,
         pinned: column::<i64>(row, 13)? != 0,
         truncated: column::<i64>(row, 14)? != 0,
-        source_app: column(row, 15)?,
     })
 }
 
@@ -1595,8 +1582,6 @@ mod tests {
             content: ClipboardContent::Text(text.to_string()),
             preview: text.to_string(),
             truncated: false,
-            source_app: Some("notepad.exe".to_string()),
-            source_title: None,
         }
     }
 
@@ -1673,8 +1658,6 @@ mod tests {
             content: ClipboardContent::Text("Hello\x00World\x07Test".to_string()),
             preview: "Hello\x00World\x07Test".to_string(),
             truncated: false,
-            source_app: None,
-            source_title: None,
         };
 
         let outcome = match storage.insert(&entry) {
@@ -1757,15 +1740,11 @@ mod tests {
             content: ClipboardContent::Text("a\nb".to_string()),
             preview: "a\nb".to_string(),
             truncated: false,
-            source_app: None,
-            source_title: None,
         };
         let crlf = ClipboardEntry {
             content: ClipboardContent::Text("a\r\nb".to_string()),
             preview: "a\r\nb".to_string(),
             truncated: false,
-            source_app: None,
-            source_title: None,
         };
         assert_eq!(
             content_hash(&lf.content).ok(),
@@ -1776,15 +1755,11 @@ mod tests {
             content: ClipboardContent::Files(vec!["C:/b.txt".to_string(), "C:/a.txt".to_string()]),
             preview: "[2 个文件]".to_string(),
             truncated: false,
-            source_app: None,
-            source_title: None,
         };
         let files_b = ClipboardEntry {
             content: ClipboardContent::Files(vec!["C:/a.txt".to_string(), "C:/b.txt".to_string()]),
             preview: "[2 个文件]".to_string(),
             truncated: false,
-            source_app: None,
-            source_title: None,
         };
         assert_eq!(
             content_hash(&files_a.content).ok(),
@@ -1803,8 +1778,6 @@ mod tests {
             ]),
             preview: "[2 个文件]".to_string(),
             truncated: false,
-            source_app: None,
-            source_title: None,
         };
 
         let outcome = match storage.insert(&entry) {
@@ -1853,8 +1826,6 @@ mod tests {
             },
             preview: "[图片]".to_string(),
             truncated: false,
-            source_app: None,
-            source_title: None,
         };
 
         let outcome = match storage.insert(&entry) {
@@ -1895,8 +1866,6 @@ mod tests {
             },
             preview: "[图片过大]".to_string(),
             truncated: true,
-            source_app: None,
-            source_title: None,
         };
 
         let outcome = match storage.insert(&entry) {
@@ -2044,8 +2013,6 @@ mod tests {
             content: ClipboardContent::Html("<b>富文本</b>".to_string()),
             preview: "富文本".to_string(),
             truncated: false,
-            source_app: None,
-            source_title: None,
         }) {
             Ok(o) => o,
             Err(e) => panic!("insert failed: {}", e),
@@ -2054,8 +2021,6 @@ mod tests {
             content: ClipboardContent::Files(vec!["C:\\a.txt".to_string()]),
             preview: "1 个文件".to_string(),
             truncated: false,
-            source_app: None,
-            source_title: None,
         }) {
             Ok(o) => o,
             Err(e) => panic!("insert failed: {}", e),
@@ -2224,8 +2189,6 @@ mod tests {
             },
             preview: "图片".to_string(),
             truncated: false,
-            source_app: None,
-            source_title: None,
         }) {
             Ok(o) => o,
             Err(e) => panic!("insert failed: {}", e),
@@ -2869,8 +2832,6 @@ mod tests {
             },
             preview: "[图片]".to_string(),
             truncated: false,
-            source_app: None,
-            source_title: None,
         }
     }
 

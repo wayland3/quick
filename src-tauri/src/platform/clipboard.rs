@@ -69,8 +69,6 @@ pub struct ClipboardEntry {
     pub content: ClipboardContent,
     pub preview: String,
     pub truncated: bool,
-    pub source_app: Option<String>,
-    pub source_title: Option<String>,
 }
 
 /// 获取剪贴板序列号
@@ -207,8 +205,6 @@ mod windows_impl {
                     content: ClipboardContent::Text(text),
                     preview,
                     truncated: body_truncated,
-                    source_app: None,
-                    source_title: None,
                 }));
             }
         }
@@ -222,8 +218,6 @@ mod windows_impl {
                         content: ClipboardContent::Html(html),
                         preview,
                         truncated: false,
-                        source_app: None,
-                        source_title: None,
                     }));
                 }
             }
@@ -238,8 +232,6 @@ mod windows_impl {
                         content: ClipboardContent::Rtf(rtf),
                         preview,
                         truncated: false,
-                        source_app: None,
-                        source_title: None,
                     }));
                 }
             }
@@ -257,8 +249,6 @@ mod windows_impl {
                             },
                             preview: "[图片]".to_string(),
                             truncated: false,
-                            source_app: None,
-                            source_title: None,
                         })),
                         ImageRead::TooLarge => Ok(Some(ClipboardEntry {
                             content: ClipboardContent::Image {
@@ -267,8 +257,6 @@ mod windows_impl {
                             },
                             preview: "[图片过大]".to_string(),
                             truncated: true,
-                            source_app: None,
-                            source_title: None,
                         })),
                     };
                 }
@@ -286,8 +274,6 @@ mod windows_impl {
                             },
                             preview: "[图片]".to_string(),
                             truncated: false,
-                            source_app: None,
-                            source_title: None,
                         })),
                         ImageRead::TooLarge => Ok(Some(ClipboardEntry {
                             content: ClipboardContent::Image {
@@ -296,8 +282,6 @@ mod windows_impl {
                             },
                             preview: "[图片过大]".to_string(),
                             truncated: true,
-                            source_app: None,
-                            source_title: None,
                         })),
                     };
                 }
@@ -312,8 +296,6 @@ mod windows_impl {
                     content: ClipboardContent::Files(files),
                     preview,
                     truncated: false,
-                    source_app: None,
-                    source_title: None,
                 }));
             }
         }
@@ -797,8 +779,6 @@ mod linux_impl {
                     content: ClipboardContent::Text(text),
                     preview,
                     truncated,
-                    source_app: None,
-                    source_title: None,
                 }));
             }
         }
@@ -812,8 +792,6 @@ mod linux_impl {
                     content: ClipboardContent::Html(html),
                     preview,
                     truncated: false,
-                    source_app: None,
-                    source_title: None,
                 }));
             }
         }
@@ -831,8 +809,6 @@ mod linux_impl {
                     },
                     preview: "[图片过大]".to_string(),
                     truncated: true,
-                    source_app: None,
-                    source_title: None,
                 }));
             }
 
@@ -846,8 +822,6 @@ mod linux_impl {
                 },
                 preview,
                 truncated: false,
-                source_app: None,
-                source_title: None,
             }));
         }
 

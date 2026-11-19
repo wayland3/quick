@@ -32,7 +32,6 @@ describe('IPC 契约', () => {
         id: 1,
         kind: 'text',
         preview: 'test',
-        source_app: null,
         created_at: 0,
         last_copied_at: 0,
         copy_count: 1,
@@ -67,7 +66,6 @@ describe('IPC 契约', () => {
         copy_count: 1,
         pinned: false,
         truncated: false,
-        source_app: null,
       };
 
       const keys = Object.keys(detail).sort();

@@ -39,7 +39,6 @@ export function PreviewPane({ detail, loading }: PreviewPaneProps) {
       <div className="qw-preview-body">{renderBody(detail)}</div>
 
       <div className="qw-preview-meta">
-        <span>{detail.source_app || '未知来源'}</span>
         <span>{formatFullTime(detail.created_at)}</span>
         <span>{formatBytes(detail.byte_size)}</span>
         {detail.copy_count > 1 && <span>已复制 {formatCount(detail.copy_count)} 次</span>}

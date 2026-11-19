@@ -11,7 +11,6 @@ export interface ClipboardItem {
   id: number;
   kind: ClipKind;
   preview: string;
-  source_app: string | null;
   created_at: number;
   last_copied_at: number;
   copy_count: number;
@@ -39,7 +38,6 @@ export interface ClipboardDetail {
   copy_count: number;
   pinned: boolean;
   truncated: boolean;
-  source_app: string | null;
 }
 
 export interface ClipboardListResult {

@@ -19,7 +19,6 @@ pub struct ClipboardItem {
     pub id: i64,
     pub kind: ClipKind,
     pub preview: String,
-    pub source_app: Option<String>,
     pub created_at: i64,
     pub last_copied_at: i64,
     pub copy_count: i64,
@@ -300,7 +299,6 @@ pub struct ClipboardDetail {
     pub copy_count: i64,
     pub pinned: bool,
     pub truncated: bool,
-    pub source_app: Option<String>,
 }
 
 #[cfg(test)]
@@ -485,7 +483,6 @@ mod settings_tests {
             id: 1,
             kind: ClipKind::Text,
             preview: String::new(),
-            source_app: None,
             created_at: 0,
             last_copied_at: 0,
             copy_count: 1,
@@ -529,7 +526,6 @@ mod settings_tests {
             copy_count: 1,
             pinned: false,
             truncated: false,
-            source_app: None,
         };
 
         let value = serde_json::to_value(&detail).expect("serialize");

@@ -8,7 +8,6 @@ use crate::models::Settings;
 use crate::platform::clipboard::{
     get_sequence_number, read_clipboard_content, ClipboardContent, ClipboardEntry,
 };
-use crate::platform::focus::capture_foreground;
 use crate::services::retention::RetentionPolicy;
 use crate::services::storage::{content_hash, ClipboardStorage};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -261,25 +260,10 @@ impl ClipboardMonitor {
                     None => continue,
                 };
 
-                let mut entry = entry;
-                attach_source_app(&mut entry);
-
-                // 媒体类型开关：被关闭的类型不入库（不重新捕获前台窗口，沿用已有信息）
+                // 媒体类型开关：被关闭的类型不入库
                 if !type_enabled(&settings, &entry.content) {
                     log::debug!("clipboard type disabled in settings, skipped");
                     continue;
-                }
-
-                // 排除应用：命中则完全不入库（通配匹配随 T-207）
-                if let Some(source) = &entry.source_app {
-                    if settings
-                        .excluded_apps
-                        .iter()
-                        .any(|app_name| app_name.eq_ignore_ascii_case(source))
-                    {
-                        log::debug!("clipboard source excluded, skipped");
-                        continue;
-                    }
                 }
 
                 // 序列号覆盖不到时（例如范围 seal 晚于轮询），按内容 hash 兜底
@@ -413,13 +397,6 @@ fn type_enabled(settings: &crate::models::Settings, content: &ClipboardContent) 
         }
         ClipboardContent::Image { .. } => settings.record_image,
         ClipboardContent::Files(_) => settings.record_files,
-    }
-}
-
-/// 记录来源应用（进程名）。窗口标题暂不采集，避免引入隐私风险。
-fn attach_source_app(entry: &mut ClipboardEntry) {
-    if let Some(foreground) = capture_foreground() {
-        entry.source_app = Some(foreground.process_name);
     }
 }
 

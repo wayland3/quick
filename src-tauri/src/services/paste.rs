@@ -306,7 +306,6 @@ mod tests {
             copy_count: 1,
             pinned: false,
             truncated: false,
-            source_app: None,
         }
     }
 

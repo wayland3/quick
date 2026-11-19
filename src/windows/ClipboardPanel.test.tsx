@@ -29,7 +29,6 @@ function item(overrides: Partial<ClipboardItem> = {}): ClipboardItem {
     id: 1,
     kind: 'text',
     preview: '示例文本',
-    source_app: 'notepad.exe',
     created_at: Date.now(),
     last_copied_at: Date.now(),
     copy_count: 1,
@@ -60,7 +59,6 @@ function detail(id: number): ClipboardDetail {
     copy_count: 1,
     pinned: false,
     truncated: false,
-    source_app: 'notepad.exe',
   };
 }
 
