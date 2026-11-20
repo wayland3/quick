@@ -23,7 +23,18 @@ fn db_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, AppE
 #[derive(serde::Serialize, Clone)]
 struct SettingsChanged {
     keys: Vec<String>,
+    /// 热键注册失败（供前端提示改绑）
     failed: Vec<String>,
+    /// 其他副作用失败（已转成用户可读文案，直接展示）
+    errors: Vec<String>,
+}
+
+/// 设置副作用执行结果
+struct SideEffectReport {
+    /// 改绑失败的热键 accelerator
+    failed_hotkeys: Vec<String>,
+    /// 非热键类失败（如开机自启），错误文案可直接展示
+    errors: Vec<String>,
 }
 
 /// 读取设置
@@ -73,19 +84,20 @@ pub async fn settings_update(
             return Ok(current);
         }
 
-        let failed = apply_side_effects(&app, &current, &merged, &changed)?;
+        let report = apply_side_effects(&app, &current, &merged, &changed)?;
 
         app.emit(
             "settings://changed",
             SettingsChanged {
                 keys: changed,
-                failed: failed.clone(),
+                failed: report.failed_hotkeys.clone(),
+                errors: report.errors.clone(),
             },
         )
         .map_err(|e| AppError::Internal(format!("广播设置变更失败：{}", e)))?;
 
         // 运行时占用导致热键没注册成功：单独通知，不阻断设置保存
-        for accelerator in &failed {
+        for accelerator in &report.failed_hotkeys {
             let _ = app.emit(
                 "hotkey://failed",
                 serde_json::json!({ "accelerator": accelerator }),
@@ -108,30 +120,33 @@ pub async fn settings_reset(app: tauri::AppHandle) -> Result<Settings, AppError>
     settings_update(app, patch).await
 }
 
-/// 应用设置副作用；返回注册失败的热键 accelerator 列表
+/// 应用设置副作用；返回热键失败与其它副作用失败（R-012）
 fn apply_side_effects(
     app: &tauri::AppHandle,
     previous: &Settings,
     next: &Settings,
     changed: &[String],
-) -> Result<Vec<String>, AppError> {
-    let mut failed = Vec::new();
+) -> Result<SideEffectReport, AppError> {
+    let mut report = SideEffectReport {
+        failed_hotkeys: Vec::new(),
+        errors: Vec::new(),
+    };
 
     // 热键：逐个改绑（新键注册成功才注销旧键）
     if changed.contains(&"launcher_hotkey".to_string())
         && previous.launcher_hotkey != next.launcher_hotkey
         && !rebind_one(app, HotkeyAction::Launcher, &next.launcher_hotkey)?
     {
-        failed.push(next.launcher_hotkey.clone());
+        report.failed_hotkeys.push(next.launcher_hotkey.clone());
     }
     if changed.contains(&"clipboard_hotkey".to_string())
         && previous.clipboard_hotkey != next.clipboard_hotkey
         && !rebind_one(app, HotkeyAction::Clipboard, &next.clipboard_hotkey)?
     {
-        failed.push(next.clipboard_hotkey.clone());
+        report.failed_hotkeys.push(next.clipboard_hotkey.clone());
     }
 
-    // 开机自启：失败不阻断保存，与热键策略一致（返回结果由前端提示）
+    // 开机自启：失败不阻断保存，但要把失败告诉前端（R-012）
     if changed.contains(&"autostart".to_string()) && previous.autostart != next.autostart {
         let autolaunch = app.autolaunch();
         let result = if next.autostart {
@@ -141,6 +156,9 @@ fn apply_side_effects(
         };
         if let Err(e) = result {
             log::warn!("设置开机自启失败：{}", e);
+            report
+                .errors
+                .push("开机自启设置未生效，请检查系统权限后重试".to_string());
         }
     }
 
@@ -151,7 +169,7 @@ fn apply_side_effects(
         }
     }
 
-    Ok(failed)
+    Ok(report)
 }
 
 /// 改绑单个热键；true=成功

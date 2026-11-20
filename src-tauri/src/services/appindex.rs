@@ -83,10 +83,15 @@ pub struct AppIndexScan {
 /// 合并候选：过滤非应用、按 key 去重、稳定排序
 pub fn build_index(candidates: Vec<AppCandidate>) -> Vec<AppIndexRow> {
     let mut chosen: HashMap<String, AppCandidate> = HashMap::new();
+    // 同一目标常同时出现在开始菜单与 App Paths，文件可达性只查一次（R-019）
+    let mut usable_cache: HashMap<String, bool> = HashMap::new();
 
     for candidate in candidates {
         let key = normalize_key(&candidate.target);
-        if key.is_empty() || candidate.name.trim().is_empty() || !is_usable(&candidate) {
+        if key.is_empty()
+            || candidate.name.trim().is_empty()
+            || !is_usable(&candidate, &mut usable_cache)
+        {
             continue;
         }
 
@@ -187,7 +192,7 @@ fn prefer(existing: &AppCandidate, incoming: &AppCandidate) -> bool {
     existing.icon_path.is_some() || incoming.icon_path.is_none()
 }
 
-fn is_usable(candidate: &AppCandidate) -> bool {
+fn is_usable(candidate: &AppCandidate, usable_cache: &mut HashMap<String, bool>) -> bool {
     let name = candidate.name.to_lowercase();
     if NON_APP_NAME_HINTS.iter().any(|hint| name.contains(hint)) {
         return false;
@@ -199,34 +204,41 @@ fn is_usable(candidate: &AppCandidate) -> bool {
         // 已由开始菜单 / App Paths 覆盖，收入会造成同一应用重复出现。
         KIND_UWP => candidate.target.contains('!'),
         _ => {
-            let path = Path::new(&candidate.target);
-
-            #[cfg(target_os = "windows")]
-            {
-                path.is_file()
-                    && path
-                        .extension()
-                        .and_then(|ext| ext.to_str())
-                        .map(|ext| {
-                            EXECUTABLE_EXTENSIONS
-                                .iter()
-                                .any(|allowed| ext.eq_ignore_ascii_case(allowed))
-                        })
-                        .unwrap_or(false)
+            if let Some(&cached) = usable_cache.get(&candidate.target) {
+                return cached;
             }
-
-            #[cfg(target_os = "linux")]
-            {
-                // Linux 检查文件是否存在且可执行
-                use std::os::unix::fs::PermissionsExt;
-                path.is_file()
-                    && path
-                        .metadata()
-                        .map(|m| m.permissions().mode() & 0o111 != 0)
-                        .unwrap_or(false)
-            }
+            let usable = executable_file_usable(&candidate.target);
+            usable_cache.insert(candidate.target.clone(), usable);
+            usable
         }
     }
+}
+
+/// 目标文件是否存在且可作为启动目标（R-019：只做一次磁盘检查）
+#[cfg(target_os = "windows")]
+fn executable_file_usable(target: &str) -> bool {
+    let path = Path::new(target);
+    path.is_file()
+        && path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| {
+                EXECUTABLE_EXTENSIONS
+                    .iter()
+                    .any(|allowed| ext.eq_ignore_ascii_case(allowed))
+            })
+            .unwrap_or(false)
+}
+
+#[cfg(target_os = "linux")]
+fn executable_file_usable(target: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    let path = Path::new(target);
+    path.is_file()
+        && path
+            .metadata()
+            .map(|m| m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
 }
 
 /// 采集全部来源并合并；单项来源失败时降级，不返回错误

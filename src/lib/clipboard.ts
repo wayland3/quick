@@ -64,7 +64,10 @@ export interface Settings {
 
 export interface SettingsChangedPayload {
   keys: string[];
+  /** 热键注册失败（accelerator 列表） */
   failed: string[];
+  /** 其他副作用失败（已转成用户可读文案） */
+  errors: string[];
 }
 
 export const FILTERS: ReadonlyArray<{ id: ClipFilter; label: string }> = [

@@ -102,37 +102,54 @@ pub async fn hotkey_rebind(
 
     let success = hotkey_manager.rebind(&app, action_enum, &accelerator)?;
 
-    // 改绑成功后同步写入 settings（保持 settings 与运行时一致）
+    // 改绑成功后同步写入 settings（保持 settings 与运行时一致）；
+    // 写回是后台任务，失败只记日志（运行时已生效，提示会误导用户重试）（R-011）
     if success {
         let path = app
             .try_state::<crate::services::storage::DbPath>()
             .map(|state| state.as_path().to_path_buf());
 
-        if let Some(path) = path {
-            let action_clone = action.clone();
-            let accelerator_clone = accelerator.clone();
+        match path {
+            Some(path) => {
+                let action_clone = action.clone();
+                let accelerator_clone = accelerator.clone();
 
-            tauri::async_runtime::spawn(async move {
-                let _ = tauri::async_runtime::spawn_blocking(move || {
-                    let mut storage =
-                        crate::services::storage::ClipboardStorage::open_write_at(&path)?;
-                    let _ = storage.transaction_update_settings(|current| {
-                        let mut next = current.clone();
-                        match action_clone.as_str() {
-                            "launcher" => next.launcher_hotkey = accelerator_clone,
-                            "clipboard" => next.clipboard_hotkey = accelerator_clone,
-                            _ => {}
-                        }
-                        Ok(next)
-                    });
-                    Ok::<(), AppError>(())
-                })
-                .await;
-            });
+                tauri::async_runtime::spawn(async move {
+                    let result = tauri::async_runtime::spawn_blocking(move || {
+                        persist_hotkey_setting(&path, &action_clone, &accelerator_clone)
+                    })
+                    .await;
+                    match result {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => log::warn!("hotkey rebind persisted failed: {}", e),
+                        Err(e) => log::warn!("hotkey rebind persist join failed: {}", e),
+                    }
+                });
+            }
+            None => log::warn!("hotkey rebind succeeded but database path is unavailable"),
         }
     }
 
     Ok(success)
+}
+
+/// 把改绑结果写回 settings（成功路径的后台持久化）
+fn persist_hotkey_setting(
+    path: &std::path::Path,
+    action: &str,
+    accelerator: &str,
+) -> Result<(), AppError> {
+    let mut storage = crate::services::storage::ClipboardStorage::open_write_at(path)?;
+    storage.transaction_update_settings(|current| {
+        let mut next = current.clone();
+        match action {
+            "launcher" => next.launcher_hotkey = accelerator.to_string(),
+            "clipboard" => next.clipboard_hotkey = accelerator.to_string(),
+            _ => {}
+        }
+        Ok(next)
+    })?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -188,4 +205,86 @@ pub async fn app_data_dir_open<R: tauri::Runtime>(
     app.opener()
         .open_path(dir.to_string_lossy().into_owned(), None::<&str>)
         .map_err(|e| AppError::Internal(format!("打开数据目录失败：{}", e)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::persist_hotkey_setting;
+    use crate::services::storage::ClipboardStorage;
+
+    fn temp_db_path(tag: &str) -> std::path::PathBuf {
+        let unique = format!(
+            "quick-persist-{}-{}-{}",
+            tag,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
+        std::env::temp_dir().join(unique).join("quick.db")
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn 改绑写回用launcher更新设置() {
+        let db_path = temp_db_path("launcher");
+        let storage = ClipboardStorage::open_at(&db_path).expect("open db");
+        let before = storage.load_settings();
+        drop(storage);
+
+        persist_hotkey_setting(&db_path, "launcher", "Ctrl+Shift+K").expect("persist");
+
+        let storage = ClipboardStorage::open_at(&db_path).expect("reopen db");
+        let after = storage.load_settings();
+        assert_eq!(after.launcher_hotkey, "Ctrl+Shift+K");
+        assert_eq!(
+            after.clipboard_hotkey, before.clipboard_hotkey,
+            "不应改动另一个热键"
+        );
+
+        if let Some(dir) = db_path.parent() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn 改绑写回用clipboard更新设置() {
+        let db_path = temp_db_path("clipboard");
+        let storage = ClipboardStorage::open_at(&db_path).expect("open db");
+        let before = storage.load_settings();
+        drop(storage);
+
+        persist_hotkey_setting(&db_path, "clipboard", "Ctrl+Alt+V").expect("persist");
+
+        let storage = ClipboardStorage::open_at(&db_path).expect("reopen db");
+        let after = storage.load_settings();
+        assert_eq!(after.clipboard_hotkey, "Ctrl+Alt+V");
+        assert_eq!(after.launcher_hotkey, before.launcher_hotkey);
+
+        if let Some(dir) = db_path.parent() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn 未知动作不改动设置() {
+        let db_path = temp_db_path("unknown");
+        let storage = ClipboardStorage::open_at(&db_path).expect("open db");
+        let before = storage.load_settings();
+        drop(storage);
+
+        persist_hotkey_setting(&db_path, "unknown", "Ctrl+K").expect("persist");
+
+        let storage = ClipboardStorage::open_at(&db_path).expect("reopen db");
+        let after = storage.load_settings();
+        assert_eq!(after.launcher_hotkey, before.launcher_hotkey);
+        assert_eq!(after.clipboard_hotkey, before.clipboard_hotkey);
+
+        if let Some(dir) = db_path.parent() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
 }

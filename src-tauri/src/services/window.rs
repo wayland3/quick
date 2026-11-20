@@ -493,9 +493,8 @@ impl OverlayManager {
             .state
             .lock()
             .map_err(|_| AppError::Internal("lock poisoned".into()))?;
-        if *state != OverlayState::Shown {
-            // 只在 Shown 状态下响应 blur
-            log::info!("on_blur: state is {:?}, not Shown, skipping", *state);
+        if !should_hide_on_blur(*state) {
+            log::info!("on_blur: state is {:?}, hidden/hiding, skipping", *state);
             return Ok(());
         }
         drop(state);
@@ -533,6 +532,14 @@ impl OverlayManager {
     pub fn get_mode(&self) -> Option<OverlayMode> {
         self.current_mode.lock().ok().and_then(|m| *m)
     }
+}
+
+/// blur 时是否应触发隐藏（R-013）
+///
+/// `Showing` 是 120ms 淡入动画期：用户在这段时间内点走窗口，浮层仍在前台，
+/// 旧实现只认 `Shown` 会留在屏幕上。`Hidden` / `Hiding` 本来就是消失中，忽略。
+fn should_hide_on_blur(state: OverlayState) -> bool {
+    matches!(state, OverlayState::Shown | OverlayState::Showing)
 }
 
 #[derive(Debug, Deserialize)]
@@ -665,6 +672,18 @@ mod tests {
         // 切换模式
         *manager.current_mode.lock().unwrap() = Some(OverlayMode::Clipboard);
         assert_eq!(manager.get_mode(), Some(OverlayMode::Clipboard));
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn 失焦在显示与动画期都要隐藏() {
+        assert!(should_hide_on_blur(OverlayState::Shown));
+        assert!(
+            should_hide_on_blur(OverlayState::Showing),
+            "动画期失焦也应隐藏（R-013）"
+        );
+        assert!(!should_hide_on_blur(OverlayState::Hidden));
+        assert!(!should_hide_on_blur(OverlayState::Hiding));
     }
 
     #[test]

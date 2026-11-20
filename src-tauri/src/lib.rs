@@ -76,6 +76,7 @@ pub fn run() {
         .manage(HotkeyManager::new())
         .manage(services::paste::PasteOptions::new())
         .manage(services::appindex::IndexRebuildLock::default())
+        .manage(commands::launcher::LaunchGuard::default())
         .on_window_event(|window, event| {
             // 点击其他窗口（失焦）即隐藏浮层；Esc 由前端监听统一处理
             if window.label() == "overlay" && matches!(event, tauri::WindowEvent::Focused(false)) {
@@ -199,19 +200,78 @@ fn register_startup_hotkeys(
         ),
     ];
 
-    let mut failed = Vec::new();
+    let mut failed: Vec<String> = Vec::new();
     for (action, configured, default) in bindings {
-        match manager.rebind(app, action, configured) {
-            Ok(true) => {}
-            _ => {
-                // 配置键注册失败：尝试默认键，并记录配置键（供前端提示改绑）
-                if !manager.rebind(app, action, default)? {
-                    failed.push(default.to_string());
-                }
-                failed.push(configured.to_string());
-            }
+        if let Ok(true) = manager.rebind(app, action, configured) {
+            continue;
         }
+
+        // 配置键与默认键相同（用户没改过且默认键被占用）时跳过回退：
+        // 对同一个键再注册一次没有意义，还会产生重复的失败记录（R-010）
+        let fallback_attempted = configured != default;
+        let fallback_ok = if fallback_attempted {
+            manager.rebind(app, action, default)?
+        } else {
+            false
+        };
+        failed.extend(failure_records(
+            configured,
+            default,
+            fallback_attempted,
+            fallback_ok,
+        ));
     }
 
     Ok(failed)
+}
+
+/// 注册失败后的待提示键列表（纯函数，锁定 R-010 的去重语义）
+///
+/// - 配置键 == 默认键：只记配置键一次（未回退）
+/// - 配置键 != 默认键且回退也失败：默认键与配置键各记一次（互不相同）
+/// - 配置键 != 默认键且回退成功：只记配置键（提示用户改绑）
+fn failure_records(
+    configured: &str,
+    default: &str,
+    fallback_attempted: bool,
+    fallback_ok: bool,
+) -> Vec<String> {
+    let mut records = Vec::new();
+    if fallback_attempted && !fallback_ok {
+        records.push(default.to_string());
+    }
+    if !records.iter().any(|key| key == configured) {
+        records.push(configured.to_string());
+    }
+    records
+}
+
+#[cfg(test)]
+mod tests {
+    use super::failure_records;
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn 配置键等于默认键时只记一次() {
+        // 默认键被占用、用户没改过：旧实现会同时记默认键与配置键（同一字符串两次）
+        let records = failure_records("Alt+Space", "Alt+Space", false, false);
+        assert_eq!(records, vec!["Alt+Space".to_string()]);
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn 回退默认键也失败时两条都记() {
+        let records = failure_records("Ctrl+Shift+K", "Alt+Space", true, false);
+        assert_eq!(
+            records,
+            vec!["Alt+Space".to_string(), "Ctrl+Shift+K".to_string()]
+        );
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn 回退成功时只提示配置键() {
+        let records = failure_records("Ctrl+Shift+K", "Alt+Space", true, true);
+        assert_eq!(records, vec!["Ctrl+Shift+K".to_string()]);
+    }
 }

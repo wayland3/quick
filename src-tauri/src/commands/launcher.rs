@@ -107,11 +107,64 @@ fn query_builtin_commands(query: &str, limit: usize) -> Result<LauncherQueryResu
     Ok(LauncherQueryResult { items, hint: None })
 }
 
+/// 启动并发去重（R-022）
+///
+/// 前端已有 launchingRef，但热键/托盘/多入口仍可能并发触发同一条目；
+/// 同一 key 的启动流程进行中时忽略重复请求，避免重复起进程与重复计频率。
+#[derive(Default)]
+pub struct LaunchGuard(std::sync::Mutex<std::collections::HashSet<String>>);
+
+impl LaunchGuard {
+    /// 尝试占用 key；已被占用返回 false
+    fn try_begin(&self, key: &str) -> bool {
+        let mut set = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        set.insert(key.to_string())
+    }
+
+    /// 释放 key（无论启动成功与否都要调用）
+    fn finish(&self, key: &str) {
+        let mut set = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        set.remove(key);
+    }
+}
+
+/// 启动前置校验：win32 目标必须存在；url 不做文件检查（R-021）
+fn validate_launch_target(kind: &str, target: &str) -> Result<(), AppError> {
+    if kind == "win32" && !std::path::Path::new(target).is_file() {
+        return Err(AppError::LaunchFailed(
+            "应用不存在或已被移动，请重建索引".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// 打开启动器选中的应用或执行内置命令
 ///
 /// 顺序为「先启动、成功后再隐藏浮层」：启动失败时面板保持可见，可继续换一条重试。
 #[tauri::command]
 pub async fn launcher_execute(
+    app: tauri::AppHandle,
+    window: tauri::Window,
+    key: String,
+) -> Result<(), AppError> {
+    let guard = app.state::<LaunchGuard>();
+    if !guard.try_begin(&key) {
+        log::debug!("launcher execute deduped (already launching): key={}", key);
+        return Ok(());
+    }
+    let result = execute_launch(app.clone(), window, key.clone()).await;
+    guard.finish(&key);
+    result
+}
+
+/// 启动编排主体（launcher_execute 的去重包装内调用）
+async fn execute_launch(
     app: tauri::AppHandle,
     window: tauri::Window,
     key: String,
@@ -137,6 +190,8 @@ pub async fn launcher_execute(
 
     let launch_row = row.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        // 目标文件已被移动/删除时提前给出明确原因，不惊动 ShellExecute（R-021）
+        validate_launch_target(&launch_row.kind, &launch_row.target)?;
         // 浮层此时在前台，先授权新进程抢占前台
         crate::platform::apps::allow_foreground();
         match launch_row.kind.as_str() {
@@ -254,4 +309,39 @@ fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{validate_launch_target, LaunchGuard};
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn 并发启动去重只接受首个请求() {
+        let guard = LaunchGuard::default();
+        assert!(guard.try_begin("chrome.exe"));
+        assert!(
+            !guard.try_begin("chrome.exe"),
+            "启动中重复请求应被忽略（R-022）"
+        );
+        assert!(guard.try_begin("notepad.exe"), "不同条目互不影响");
+        guard.finish("chrome.exe");
+        assert!(guard.try_begin("chrome.exe"), "完成后应允许再次启动");
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn 启动前置校验区分类型() {
+        let exe = std::env::current_exe()
+            .expect("定位测试可执行文件")
+            .to_string_lossy()
+            .to_string();
+        assert!(validate_launch_target("win32", &exe).is_ok());
+        assert!(
+            validate_launch_target("win32", r"C:\quick-not-exist\missing.exe").is_err(),
+            "失效 win32 目标应提前拒绝（R-021）"
+        );
+        // url 不做文件存在性检查
+        assert!(validate_launch_target("url", "https://example.com").is_ok());
+    }
 }

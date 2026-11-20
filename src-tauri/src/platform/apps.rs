@@ -164,7 +164,8 @@ mod windows_impl {
         let mut path_buf = vec![0u16; 2048];
         // SAFETY: pfd 允许为 null；缓冲区长度与调用匹配
         unsafe { shell_link.GetPath(&mut path_buf, std::ptr::null_mut(), SLGP_RAWPATH) }.ok()?;
-        let target = string_from_wide(&path_buf)?;
+        // RAWPATH 可能保存未展开的 %VAR% 形式，入库前展开（R-018）
+        let target = expand_env_vars(&string_from_wide(&path_buf)?);
 
         let mut args_buf = vec![0u16; 1024];
         let args = if unsafe { shell_link.GetArguments(&mut args_buf) }.is_ok() {
@@ -211,6 +212,37 @@ mod windows_impl {
         let end = buffer.iter().position(|&unit| unit == 0)?;
         let text = String::from_utf16_lossy(&buffer[..end]);
         (!text.is_empty()).then_some(text)
+    }
+
+    /// 展开路径中的环境变量（`%SystemRoot%` 等，R-018）
+    ///
+    /// 快捷方式与注册表里可能保存未展开的路径；不展开会导致 `is_file()`
+    /// 判定失败，应用被错误过滤出索引。不含 `%` 的路径直接原样返回；
+    /// 未知变量由系统保持原样（`ExpandEnvironmentStringsW` 语义）。
+    fn expand_env_vars(value: &str) -> String {
+        use windows::Win32::System::Environment::ExpandEnvironmentStringsW;
+
+        if !value.contains('%') {
+            return value.to_string();
+        }
+
+        let wide = wide_str(value);
+        // SAFETY: 源串以 NUL 结尾且在调用期间存活；第一次只取所需长度
+        let needed = unsafe { ExpandEnvironmentStringsW(PCWSTR::from_raw(wide.as_ptr()), None) };
+        if needed == 0 {
+            return value.to_string();
+        }
+
+        let mut buffer = vec![0u16; needed as usize];
+        // SAFETY: buffer 长度与 needed 匹配（含结尾 NUL）
+        let written = unsafe {
+            ExpandEnvironmentStringsW(PCWSTR::from_raw(wide.as_ptr()), Some(&mut buffer[..]))
+        };
+        if written == 0 || written > needed {
+            return value.to_string();
+        }
+        // written 含结尾 NUL
+        String::from_utf16_lossy(&buffer[..written.saturating_sub(1) as usize])
     }
 
     struct RegistryKey(HKEY);
@@ -379,7 +411,8 @@ mod windows_impl {
 
         let (pairs, _) = buffer.as_chunks::<2>();
         let units: Vec<u16> = pairs.iter().map(|pair| u16::from_le_bytes(*pair)).collect();
-        string_from_wide(&units).map(PathBuf::from)
+        // REG_EXPAND_SZ 的路径可能含 %VAR%，展开后再交给索引过滤（R-018）
+        string_from_wide(&units).map(|value| PathBuf::from(expand_env_vars(&value)))
     }
 
     fn wide_str(value: &str) -> Vec<u16> {
@@ -795,6 +828,35 @@ mod windows_impl {
         #[allow(non_snake_case)]
         fn 不存在的目标提取图标返回空() {
             assert!(extract_icon_png(r"C:\quick-not-exist\missing.exe").is_none());
+        }
+
+        #[test]
+        #[allow(non_snake_case)]
+        fn 环境变量路径被展开() {
+            let Some(root) = std::env::var("SystemRoot").ok() else {
+                return; // 环境异常时跳过，避免误报
+            };
+            assert_eq!(expand_env_vars("%SystemRoot%"), root);
+            assert_eq!(
+                expand_env_vars("%SystemRoot%\\System32\\notepad.exe"),
+                format!("{}\\System32\\notepad.exe", root)
+            );
+        }
+
+        #[test]
+        #[allow(non_snake_case)]
+        fn 不含百分号的路径原样返回() {
+            let literal = r"C:\Windows\System32\notepad.exe";
+            assert_eq!(expand_env_vars(literal), literal);
+        }
+
+        #[test]
+        #[allow(non_snake_case)]
+        fn 未知变量保持原样() {
+            assert_eq!(
+                expand_env_vars("%QUICK_NO_SUCH_VAR%"),
+                "%QUICK_NO_SUCH_VAR%"
+            );
         }
     }
 } // mod windows_impl

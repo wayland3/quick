@@ -116,26 +116,32 @@ function App() {
       },
     );
 
-    // 设置变更：应用主题 + 热键占用等情况通过统一 toast 提示
+    // 设置变更：应用主题 + 热键占用/副作用失败等情况通过统一 toast 提示
     const unlistenSettingsChanged = listen<{
       keys: string[];
       failed: string[];
+      errors: string[];
     }>('settings://changed', (event) => {
       const keys = event.payload?.keys ?? [];
       const failed = event.payload?.failed ?? [];
-      
+      const errors = event.payload?.errors ?? [];
+
       // 如果 theme 字段变更了，重新读取并应用
       if (keys.includes('theme')) {
         ipc.settingsGet()
           .then((settings) => applyTheme(settings.theme as Theme))
           .catch(() => undefined);
       }
-      
+
+      const messages: string[] = [];
       if (failed.length > 0) {
-        setToast({
-          message: `热键 ${failed.join('、')} 已被其他程序占用`,
-          level: 'info',
-        });
+        messages.push(`热键 ${failed.join('、')} 已被其他程序占用`);
+      }
+      if (errors.length > 0) {
+        messages.push(...errors);
+      }
+      if (messages.length > 0) {
+        setToast({ message: messages.join('；'), level: 'info' });
       }
     });
 

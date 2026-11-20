@@ -88,7 +88,7 @@
 | 文件                                                 | 内容                                      |
 |------------------------------------------------------|-------------------------------------------|
 | [`AGENTS.md`](./AGENTS.md)                           | AI 协作总纲：硬规则、命令、目录           |
-| [`TASKS.md`](./TASKS.md)                             | 里程碑与任务清单（唯一进度源）            |
+| [`TASKS.md`](./TASKS.md)                             | 当前待办与遗留问题（唯一进度源）          |
 | [`docs/SPEC.md`](./docs/SPEC.md)                     | 功能规格与 UI 规范                        |
 | [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md)     | 架构、核心选型、IPC 契约、数据库 schema   |
 | [`docs/PLATFORM-NOTES.md`](./docs/PLATFORM-NOTES.md) | 平台特定 API 坑位、实现要点与代码示例     |
