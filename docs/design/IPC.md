@@ -10,6 +10,7 @@
 - 命名：`domain://event` 格式
 - 事件**只传 id 与元数据，不传剪贴板内容**
 - 典型：`clipboard://changed({ id, kind })`、`app://toast({ level, message })`
+- `clipboard://thumb-ready({ id, thumb_path })`：缩略图后台生成完成，前端就地替换该行，不重查列表（T-613）
 
 ## 数据结构
 

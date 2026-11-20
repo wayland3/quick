@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { convertFileSrc } from '@tauri-apps/api/core';
 import { ipc } from '../lib/ipc';
 import type { LauncherItem } from '../lib/launcher';
 
@@ -22,6 +23,27 @@ function groupLabel(kind: LauncherItem['kind']): string {
     default:
       return '应用';
   }
+}
+
+/** 行首图标：缓存 PNG 加载失败（文件被清/迁移残留）时回退占位符号 */
+function LauncherIcon({ item }: { item: LauncherItem }) {
+  const [failed, setFailed] = useState(false);
+  if (item.icon && !failed) {
+    return (
+      <img
+        className="qw-row-icon-img"
+        src={convertFileSrc(item.icon)}
+        alt=""
+        aria-hidden="true"
+        onError={() => setFailed(true)}
+      />
+    );
+  }
+  return (
+    <span className="qw-row-icon" aria-hidden="true">
+      {item.kind === 'command' ? '⌘' : '▣'}
+    </span>
+  );
 }
 
 export function LauncherPanel() {
@@ -164,9 +186,7 @@ export function LauncherPanel() {
                   }}
                   onDoubleClick={() => open(item)}
                 >
-                  <span className="qw-row-icon" aria-hidden="true">
-                    {item.kind === 'command' ? '⌘' : '▣'}
-                  </span>
+                  <LauncherIcon item={item} />
                   <span className="qw-row-preview">{item.title}</span>
                   {item.subtitle && <span className="qw-row-meta">{item.subtitle}</span>}
                 </button>

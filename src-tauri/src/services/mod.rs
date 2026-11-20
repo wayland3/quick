@@ -9,6 +9,7 @@ pub mod query;
 pub mod ranking;
 pub mod retention;
 pub mod storage;
+pub mod thumbnail;
 pub mod tray;
 pub mod window;
 

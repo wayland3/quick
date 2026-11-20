@@ -18,13 +18,27 @@
 - 预览取前 512 字符并剥离控制字符，列表接口只返回 `preview`，全文只在详情接口取。
 - 图片写 `blobs/<hash前两位>/<hash>.<ext>`，数据库存相对路径，换数据目录不用改库。
 
-### 未实现：缩略图（R-001）
+## 图片统一 PNG
 
-图片只存原图，`thumb_path` 恒为 NULL，不生成缩略图。
+目标：消除 Windows 存 DIB 带来的「不能预览、体积大、双平台不一致」。做法是**读取边界归一化**——平台层出去的数据只有 PNG，下游（hash、存储、预览、缩略图）不再感知 DIB。
 
-- 卡点是解码：`CF_DIB` / `.ico` 这类格式需要 WIC（Windows Imaging Component）或 Win32 图像 API，`image` crate 只覆盖 PNG/JPEG 等常见格式。
-- 当前列表只显示类型图标，预览在右侧详情区直接用原图，所以缺缩略图不影响可用性。
-- 若要实现：在 `platform/imaging.rs` 增加 `generate_thumbnail()`（WIC 解码后缩放到 128x128，写 `<hash>.thumb.png`），入库时填 `thumb_path`；列表行再改用缩略图。跨平台需另给 Linux 一套解码实现。
+- **转换位置**：`platform/clipboard.rs` 读到 `CF_DIB`/`CF_DIBV5` 时经 `platform/imaging.rs::dib_to_png` 当场转 PNG，返回 `Image { format: Png }`。实现是给裸 DIB 拼 14 字节 BMP 文件头后交 WIC 解码（覆盖调色板、`BI_BITFIELDS`、v4/v5 头等剪贴板变体），BGRA 换 RGBA 再用 `image` crate 编码；alpha 全零按不透明处理（GDI 产物的 alpha 字节无意义，直接 PNG 化会变全透明）。转换在监听线程同步执行：普通截图 <100ms；失败则回退存原始 DIB，保底不丢图。
+- **粘贴回写双格式**：`write_image` 对 PNG 条目同时写注册 `PNG` 格式和 `CF_DIB`（复用 `png_to_dib`），任一成功即算成功。只写 PNG 会有老程序粘不上的兼容性问题；只写 DIB 则丢透明。旧 `.dib` 条目仍原样写回 `CF_DIB`。
+- **hash 与体积**：去重键按 PNG 字节计算，`byte_size`、blob 预算消耗下降（PNG 比 32bpp DIB 小 3–10 倍）。
+- **旧数据**：不回填。旧 `.dib` 条目维持现状（可粘贴、详情不可预览）；同一张图旧记录与新记录会共存一次，属一次性代价。
+- **Linux**：捕获时已是 PNG（`rgba_to_png` 与 Windows 共用同一编码器），行为不变。
+
+## 缩略图
+
+目标：列表直接区分图片；详情仍只在选中时读原图。统一 PNG 之后解码只剩 `image` crate 一条路径，跨平台一套代码，不需要 WIC 后台解码。
+
+- **生成时机**：入库成功后由监听线程 `try_send` 投递条目 id 给 `services/thumbnail.rs::ThumbnailWorker` 的有界队列（容量 8）+ 独立线程。`try_send` 非阻塞，监听线程绝不等待；队列满则丢弃，缩略图留空。只有 `InsertOutcome::Inserted` 且原图非空的条目投递——重复复制走计数刷新，不重做缩略图。
+- **存储**：`blobs/thumbs/<原图hash>.png`（≤128px 长边、保比例、保留 alpha；小图不放大，`image::DynamicImage::thumbnail` 是适配边界语义会放大小图，先判尺寸再缩），行内存相对路径 `thumb_path`；在 `blobs/` 下自动纳入现有 blob 预算与清空/淘汰。
+- **回写与通知**：工作线程写文件后 `UPDATE thumb_path`（自开数据库连接，不与监听线程共享），发 `clipboard://thumb-ready({ id, thumb_path })`（绝对路径）；前端就地替换该行，不重查列表。
+- **失败策略**：任何一步失败只记日志、`thumb_path` 留 NULL，列表回退类型图标，不重试。
+- **旧数据**：不回填，仅新复制的图片带缩略图；旧 `.dib` 条目解码必然失败，同样回退图标。
+- **删除联动**：硬删除、TTL/条数/blob 预算清理都连带删除缩略图文件；孤儿回收的引用集包含 `thumb_path`，被引用的缩略图不会被误删。
+- **UI**：图片条目有 `thumb_path` 时显示 32×32 `object-fit: cover` 缩略图；`assetProtocol` 已覆盖 `$APPDATA/blobs/**`。
 
 ## 抑制与事件
 

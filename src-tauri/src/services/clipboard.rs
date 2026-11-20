@@ -188,6 +188,8 @@ fn seq_in_range(seq: u32, start: u32, end: u32) -> bool {
 pub struct ClipboardMonitor {
     stop_flag: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
+    /// 缩略图工作线程：Drop 顺序保证先停监听（释放发送端克隆）再停工作线程
+    thumbnails: Option<crate::services::thumbnail::ThumbnailWorker>,
 }
 
 impl ClipboardMonitor {
@@ -200,6 +202,13 @@ impl ClipboardMonitor {
 
         // 存储实例只属于监听线程，无需加锁
         let mut storage = ClipboardStorage::new()?;
+
+        // 缩略图工作线程：与监听线程共用同一个数据库文件，但自开连接
+        let thumbnails = crate::services::thumbnail::ThumbnailWorker::start(
+            app.clone(),
+            storage.data_dir().join("quick.db"),
+        )?;
+        let thumb_sender = thumbnails.sender();
 
         let handle = std::thread::spawn(move || {
             let mut last_seq = get_sequence_number().unwrap_or(0);
@@ -280,6 +289,17 @@ impl ClipboardMonitor {
 
                 match storage.insert(&entry) {
                     Ok(outcome) => {
+                        // 新插入的图片投递缩略图生成；重复条目已有（或没有）缩略图，不重做
+                        if outcome.is_new()
+                            && matches!(&entry.content,
+                                ClipboardContent::Image { data, .. } if !data.is_empty())
+                        {
+                            crate::services::thumbnail::ThumbnailWorker::submit(
+                                &thumb_sender,
+                                outcome.id(),
+                            );
+                        }
+
                         let payload = serde_json::json!({
                             "id": outcome.id(),
                             "kind": entry.content.kind(),
@@ -321,6 +341,7 @@ impl ClipboardMonitor {
         Ok(Self {
             stop_flag,
             handle: Some(handle),
+            thumbnails: Some(thumbnails),
         })
     }
 
@@ -329,6 +350,10 @@ impl ClipboardMonitor {
         self.stop_flag.store(true, Ordering::Relaxed);
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
+        }
+        // 监听线程已退出（其发送端克隆随之释放），再停缩略图线程并排空队列
+        if let Some(worker) = self.thumbnails.take() {
+            drop(worker);
         }
     }
 }

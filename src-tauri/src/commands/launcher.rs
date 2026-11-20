@@ -62,7 +62,15 @@ pub async fn launcher_query(
             .map(|stat| (stat.key.clone(), stat))
             .collect();
 
-        let items = ranking::rank_apps(&query, &rows, &usage, now_ms(), limit);
+        let mut items = ranking::rank_apps(&query, &rows, &usage, now_ms(), limit);
+        // icon 存的是缓存相对路径，前端 convertFileSrc 需要绝对路径
+        if let Some(data_dir) = db_path.parent() {
+            for item in items.iter_mut() {
+                if let Some(relative) = &item.icon {
+                    item.icon = Some(data_dir.join(relative).to_string_lossy().into_owned());
+                }
+            }
+        }
         Ok::<_, AppError>(LauncherQueryResult { items, hint: None })
     })
     .await

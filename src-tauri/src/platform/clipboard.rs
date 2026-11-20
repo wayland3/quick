@@ -189,118 +189,129 @@ mod windows_impl {
     }
 
     pub fn read_clipboard_content_windows() -> Result<Option<ClipboardEntry>, AppError> {
-        let _guard = open_clipboard()?;
-
-        let formats = enumerate_formats()?;
-        if formats.is_empty() {
-            return Ok(None);
+        /// 持锁阶段的产出：非图片格式直接完成；DIB 只拷贝字节，解码放到锁外
+        enum GuardPhase {
+            Done(Option<ClipboardEntry>),
+            Dib(Vec<u8>),
+            DibTooLarge,
         }
 
-        // 1. 文本
-        if formats.contains(&CF_UNICODETEXT) {
-            if let Some(text) = read_unicode_text()? {
-                let (text, body_truncated) = truncate_bytes(&text, TEXT_MAX_BYTES);
-                let (preview, _) = truncate_chars(&text, PREVIEW_MAX_CHARS);
-                return Ok(Some(ClipboardEntry {
-                    content: ClipboardContent::Text(text),
-                    preview,
-                    truncated: body_truncated,
-                }));
+        let phase = 'lock: {
+            let _guard = open_clipboard()?;
+
+            let formats = enumerate_formats()?;
+            if formats.is_empty() {
+                return Ok(None);
             }
-        }
 
-        // 2. HTML
-        if let Some(html_format) = register_format("HTML Format") {
-            if formats.contains(&html_format) {
-                if let Some(html) = read_html(html_format)? {
-                    let preview = html_to_preview(&html);
-                    return Ok(Some(ClipboardEntry {
-                        content: ClipboardContent::Html(html),
+            // 1. 文本
+            if formats.contains(&CF_UNICODETEXT) {
+                if let Some(text) = read_unicode_text()? {
+                    let (text, body_truncated) = truncate_bytes(&text, TEXT_MAX_BYTES);
+                    let (preview, _) = truncate_chars(&text, PREVIEW_MAX_CHARS);
+                    break 'lock GuardPhase::Done(Some(ClipboardEntry {
+                        content: ClipboardContent::Text(text),
+                        preview,
+                        truncated: body_truncated,
+                    }));
+                }
+            }
+
+            // 2. HTML
+            if let Some(html_format) = register_format("HTML Format") {
+                if formats.contains(&html_format) {
+                    if let Some(html) = read_html(html_format)? {
+                        let preview = html_to_preview(&html);
+                        break 'lock GuardPhase::Done(Some(ClipboardEntry {
+                            content: ClipboardContent::Html(html),
+                            preview,
+                            truncated: false,
+                        }));
+                    }
+                }
+            }
+
+            // 3. RTF
+            if let Some(rtf_format) = register_format("Rich Text Format") {
+                if formats.contains(&rtf_format) {
+                    if let Some(rtf) = read_rtf(rtf_format)? {
+                        let preview = rtf_to_preview(&rtf);
+                        break 'lock GuardPhase::Done(Some(ClipboardEntry {
+                            content: ClipboardContent::Rtf(rtf),
+                            preview,
+                            truncated: false,
+                        }));
+                    }
+                }
+            }
+
+            // 4. 图片（PNG 优先，然后 DIB/DIBV5）
+            if let Some(png_format) = register_format("PNG") {
+                if formats.contains(&png_format) {
+                    if let Some(image_read) = read_image_data(png_format)? {
+                        match image_read {
+                            ImageRead::Data(data) => {
+                                break 'lock GuardPhase::Done(Some(ClipboardEntry {
+                                    content: ClipboardContent::Image {
+                                        data,
+                                        format: ImageFormat::Png,
+                                    },
+                                    preview: "[图片]".to_string(),
+                                    truncated: false,
+                                }))
+                            }
+                            ImageRead::TooLarge => {
+                                break 'lock GuardPhase::Done(Some(too_large_entry()))
+                            }
+                        }
+                    }
+                }
+            }
+
+            // DIB 字节已在 read_image_data 里拷出，WIC 解码放到锁外（见函数尾部）
+            for fmt in [CF_DIB, CF_DIBV5] {
+                if formats.contains(&fmt) {
+                    match read_image_data(fmt)? {
+                        Some(ImageRead::Data(data)) => break 'lock GuardPhase::Dib(data),
+                        Some(ImageRead::TooLarge) => break 'lock GuardPhase::DibTooLarge,
+                        None => continue,
+                    }
+                }
+            }
+
+            // 5. 文件列表
+            if formats.contains(&CF_HDROP) {
+                if let Some(files) = read_file_list()? {
+                    let preview = files_to_preview(&files);
+                    break 'lock GuardPhase::Done(Some(ClipboardEntry {
+                        content: ClipboardContent::Files(files),
                         preview,
                         truncated: false,
                     }));
                 }
             }
-        }
 
-        // 3. RTF
-        if let Some(rtf_format) = register_format("Rich Text Format") {
-            if formats.contains(&rtf_format) {
-                if let Some(rtf) = read_rtf(rtf_format)? {
-                    let preview = rtf_to_preview(&rtf);
-                    return Ok(Some(ClipboardEntry {
-                        content: ClipboardContent::Rtf(rtf),
-                        preview,
-                        truncated: false,
-                    }));
-                }
-            }
-        }
+            GuardPhase::Done(None)
+        };
 
-        // 4. 图片（PNG 优先，然后 DIB/DIBV5）
-        if let Some(png_format) = register_format("PNG") {
-            if formats.contains(&png_format) {
-                if let Some(image_read) = read_image_data(png_format)? {
-                    return match image_read {
-                        ImageRead::Data(data) => Ok(Some(ClipboardEntry {
-                            content: ClipboardContent::Image {
-                                data,
-                                format: ImageFormat::Png,
-                            },
-                            preview: "[图片]".to_string(),
-                            truncated: false,
-                        })),
-                        ImageRead::TooLarge => Ok(Some(ClipboardEntry {
-                            content: ClipboardContent::Image {
-                                data: Vec::new(),
-                                format: ImageFormat::Png,
-                            },
-                            preview: "[图片过大]".to_string(),
-                            truncated: true,
-                        })),
-                    };
-                }
-            }
+        match phase {
+            GuardPhase::Done(entry) => Ok(entry),
+            // 锁外转换：WIC 解码大图可能上百毫秒，持全局剪贴板锁会饿死其他程序
+            GuardPhase::Dib(data) => Ok(Some(read_dib_entry(data))),
+            GuardPhase::DibTooLarge => Ok(Some(too_large_entry())),
         }
+    }
 
-        for fmt in [CF_DIB, CF_DIBV5] {
-            if formats.contains(&fmt) {
-                if let Some(image_read) = read_image_data(fmt)? {
-                    return match image_read {
-                        ImageRead::Data(data) => Ok(Some(ClipboardEntry {
-                            content: ClipboardContent::Image {
-                                data,
-                                format: ImageFormat::Dib,
-                            },
-                            preview: "[图片]".to_string(),
-                            truncated: false,
-                        })),
-                        ImageRead::TooLarge => Ok(Some(ClipboardEntry {
-                            content: ClipboardContent::Image {
-                                data: Vec::new(),
-                                format: ImageFormat::Dib,
-                            },
-                            preview: "[图片过大]".to_string(),
-                            truncated: true,
-                        })),
-                    };
-                }
-            }
+    /// 超限图片的标记条目（不落原图）
+    fn too_large_entry() -> ClipboardEntry {
+        ClipboardEntry {
+            content: ClipboardContent::Image {
+                data: Vec::new(),
+                format: ImageFormat::Png,
+            },
+            preview: "[图片过大]".to_string(),
+            truncated: true,
         }
-
-        // 5. 文件列表
-        if formats.contains(&CF_HDROP) {
-            if let Some(files) = read_file_list()? {
-                let preview = files_to_preview(&files);
-                return Ok(Some(ClipboardEntry {
-                    content: ClipboardContent::Files(files),
-                    preview,
-                    truncated: false,
-                }));
-            }
-        }
-
-        Ok(None)
     }
 
     fn enumerate_formats() -> Result<Vec<u32>, AppError> {
@@ -422,6 +433,33 @@ mod windows_impl {
         Ok(Some(ImageRead::Data(data)))
     }
 
+    /// CF_DIB 读取边界归一化（T-612）：优先转 PNG，失败回退存原始 DIB 保底不丢图
+    fn read_dib_entry(dib: Vec<u8>) -> ClipboardEntry {
+        match crate::platform::imaging::dib_to_png(&dib) {
+            // PNG 化后体积可能反超上限（不可压缩像素 + 每行 filter 字节），按结果复检
+            Ok(png) if png.len() > IMAGE_MAX_BYTES => too_large_entry(),
+            Ok(png) => ClipboardEntry {
+                content: ClipboardContent::Image {
+                    data: png,
+                    format: ImageFormat::Png,
+                },
+                preview: "[图片]".to_string(),
+                truncated: false,
+            },
+            Err(e) => {
+                log::warn!("DIB→PNG 归一化失败，回退存原始 DIB: {}", e);
+                ClipboardEntry {
+                    content: ClipboardContent::Image {
+                        data: dib,
+                        format: ImageFormat::Dib,
+                    },
+                    preview: "[图片]".to_string(),
+                    truncated: false,
+                }
+            }
+        }
+    }
+
     fn read_file_list() -> Result<Option<Vec<String>>, AppError> {
         let handle = match unsafe { GetClipboardData(CF_HDROP) } {
             Ok(h) => h,
@@ -521,6 +559,16 @@ mod windows_impl {
         Ok(())
     }
 
+    /// 以指定格式写入剪贴板；失败时剪贴板不接管句柄，由本函数释放防泄漏
+    fn set_clipboard_data_owned(cf: u32, handle: HGLOBAL) -> Result<(), AppError> {
+        let result = unsafe { SetClipboardData(cf, Some(HANDLE(handle.0 as *mut _))) };
+        if let Err(e) = result {
+            let _ = unsafe { GlobalFree(Some(handle)) };
+            return Err(e.into());
+        }
+        Ok(())
+    }
+
     fn write_unicode_text(text: &str) -> Result<(), AppError> {
         let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
         let size = wide.len() * 2;
@@ -535,9 +583,7 @@ mod windows_impl {
         unsafe { std::ptr::copy_nonoverlapping(wide.as_ptr(), ptr, wide.len()) };
         let _ = unsafe { GlobalUnlock(handle) };
 
-        unsafe { SetClipboardData(CF_UNICODETEXT, Some(HANDLE(handle.0 as *mut _))) }?;
-
-        Ok(())
+        set_clipboard_data_owned(CF_UNICODETEXT, handle)
     }
 
     fn write_html(html: &str) -> Result<(), AppError> {
@@ -555,7 +601,7 @@ mod windows_impl {
             unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, size) };
             let _ = unsafe { GlobalUnlock(handle) };
 
-            unsafe { SetClipboardData(format, Some(HANDLE(handle.0 as *mut _))) }?;
+            set_clipboard_data_owned(format, handle)?;
         }
 
         Ok(())
@@ -576,13 +622,68 @@ mod windows_impl {
             unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, size) };
             let _ = unsafe { GlobalUnlock(handle) };
 
-            unsafe { SetClipboardData(format, Some(HANDLE(handle.0 as *mut _))) }?;
+            set_clipboard_data_owned(format, handle)?;
         }
 
         Ok(())
     }
 
+    /// 写图片：PNG 双格式、DIB 单格式（T-612）
+    ///
+    /// PNG 条目同时写注册 `PNG` 格式（现代程序直读，保透明）与 `CF_DIB`
+    /// （老 GDI 程序只认 DIB）；任一成功即算成功，两者都失败才报错。
+    /// 旧 `.dib` 条目仍按原样写回 `CF_DIB`。
     fn write_image(data: &[u8], format: ImageFormat) -> Result<(), AppError> {
+        if data.is_empty() {
+            return Err(AppError::ClipboardRead);
+        }
+
+        match format {
+            ImageFormat::Dib => set_clipboard_bytes(CF_DIB, data),
+            ImageFormat::Png => {
+                let mut written = false;
+                let mut png_error = None;
+
+                if let Some(png_format) = register_format("PNG") {
+                    match set_clipboard_bytes(png_format, data) {
+                        Ok(()) => written = true,
+                        Err(e) => png_error = Some(e),
+                    }
+                }
+
+                let mut dib_error = match crate::platform::imaging::png_to_dib(data) {
+                    Ok(dib) => match set_clipboard_bytes(CF_DIB, &dib) {
+                        Ok(()) => {
+                            written = true;
+                            None
+                        }
+                        Err(e) => Some(e),
+                    },
+                    Err(e) => {
+                        log::warn!("PNG→DIB 转换失败，仅写 PNG 格式: {}", e);
+                        None
+                    }
+                };
+
+                // 单侧失败另一侧兜底成功：整体算成功，但降级原因要留痕
+                if written {
+                    if let Some(e) = png_error {
+                        log::warn!("PNG 格式写入失败，已用 CF_DIB 兜底: {}", e);
+                    } else if let Some(e) = dib_error.take() {
+                        log::warn!("CF_DIB 写入失败，仅 PNG 格式可用: {}", e);
+                    }
+                    Ok(())
+                } else {
+                    Err(png_error
+                        .or(dib_error)
+                        .unwrap_or(AppError::Internal("写入图片到剪贴板失败".into())))
+                }
+            }
+        }
+    }
+
+    /// 分配 HGLOBAL、拷贝字节并以指定格式写入剪贴板（成功后句柄归剪贴板所有）
+    fn set_clipboard_bytes(cf: u32, data: &[u8]) -> Result<(), AppError> {
         let size = data.len();
         let handle = unsafe { GlobalAlloc(GMEM_MOVEABLE, size) }?;
 
@@ -595,16 +696,7 @@ mod windows_impl {
         unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), ptr, size) };
         let _ = unsafe { GlobalUnlock(handle) };
 
-        let cf = match format {
-            ImageFormat::Png => register_format("PNG").unwrap_or(0),
-            ImageFormat::Dib => CF_DIB,
-        };
-
-        if cf != 0 {
-            unsafe { SetClipboardData(cf, Some(HANDLE(handle.0 as *mut _))) }?;
-        }
-
-        Ok(())
+        set_clipboard_data_owned(cf, handle)
     }
 
     fn write_file_list(_files: &[String]) -> Result<(), AppError> {
@@ -812,8 +904,9 @@ mod linux_impl {
                 }));
             }
 
-            // 转换为 PNG
-            let png_data = rgba_to_png(img.width, img.height, &bytes)?;
+            // 转换为 PNG（共享编码器，见 platform/imaging.rs）
+            let png_data =
+                crate::platform::imaging::rgba_to_png(img.width as u32, img.height as u32, &bytes)?;
             let preview = "[图片]".to_string();
             return Ok(Some(ClipboardEntry {
                 content: ClipboardContent::Image {
@@ -826,31 +919,6 @@ mod linux_impl {
         }
 
         Ok(None)
-    }
-
-    fn rgba_to_png(width: usize, height: usize, rgba: &[u8]) -> Result<Vec<u8>, AppError> {
-        use image::{codecs::png::PngEncoder, ImageBuffer, RgbaImage};
-        use std::io::Cursor;
-
-        let buffer: RgbaImage =
-            ImageBuffer::from_raw(width as u32, height as u32, rgba.to_vec())
-                .ok_or_else(|| AppError::Internal("invalid image dimensions".into()))?;
-
-        let mut png_bytes = Vec::new();
-        let cursor = Cursor::new(&mut png_bytes);
-        let encoder = PngEncoder::new(cursor);
-
-        use image::ImageEncoder;
-        encoder
-            .write_image(
-                buffer.as_raw(),
-                width as u32,
-                height as u32,
-                image::ExtendedColorType::Rgba8,
-            )
-            .map_err(|e| AppError::Internal(format!("PNG encode failed: {}", e)))?;
-
-        Ok(png_bytes)
     }
 
     pub fn write_clipboard_content_linux(content: &ClipboardContent) -> Result<(), AppError> {

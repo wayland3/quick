@@ -576,6 +576,182 @@ mod windows_impl {
         text.filter(|value| !value.is_empty())
     }
 
+    /// 应用图标 PNG 字节（32×32，保留透明）（T-614）
+    ///
+    /// `SHGetFileInfoW(SHGFI_ICON | SHGFI_LARGEICON)` 一次覆盖 exe / dll / .lnk
+    /// 三种来源，系统自动选最佳尺寸；HICON 经 `GetIconInfo` + `GetDIBits`
+    /// 取 RGBA 后编码 PNG。任何一步失败返回 `None`，由调用方回退占位图标。
+    pub fn extract_icon_png(target: &str) -> Option<Vec<u8>> {
+        use windows::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON};
+
+        let wide = wide_str(target);
+        let mut info = SHFILEINFOW::default();
+        // SAFETY: 路径串以 NUL 结尾且在调用期间存活；info 缓冲与 cbSize 匹配
+        let ok = unsafe {
+            SHGetFileInfoW(
+                PCWSTR::from_raw(wide.as_ptr()),
+                windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES(0),
+                Some(&mut info),
+                std::mem::size_of::<SHFILEINFOW>() as u32,
+                SHGFI_ICON | SHGFI_LARGEICON,
+            )
+        };
+        if ok == 0 || info.hIcon.is_invalid() {
+            return None;
+        }
+
+        let png = hicon_to_png(info.hIcon);
+        // SAFETY: HICON 由 SHGetFileInfo 分配，必须由调用方销毁
+        let _ = unsafe { windows::Win32::UI::WindowsAndMessaging::DestroyIcon(info.hIcon) };
+        png
+    }
+
+    /// HICON → 32×32 PNG 字节
+    fn hicon_to_png(hicon: windows::Win32::UI::WindowsAndMessaging::HICON) -> Option<Vec<u8>> {
+        use windows::Win32::Graphics::Gdi::{
+            DeleteObject, GetDC, GetDIBits, GetObjectW, ReleaseDC, BITMAP, DIB_RGB_COLORS,
+        };
+        use windows::Win32::UI::WindowsAndMessaging::{GetIconInfo, ICONINFO};
+
+        /// 输出图标边长（PNG 尺寸）
+        const ICON_SIZE: u32 = 32;
+
+        let mut icon_info = ICONINFO::default();
+        // SAFETY: icon_info 与 hicon 类型匹配，调用期间 hicon 有效
+        let (mask, color) = match unsafe { GetIconInfo(hicon, &mut icon_info) } {
+            Ok(()) => (icon_info.hbmMask, icon_info.hbmColor),
+            Err(_) => return None,
+        };
+
+        struct DcGuard(windows::Win32::Graphics::Gdi::HDC);
+        impl Drop for DcGuard {
+            fn drop(&mut self) {
+                // SAFETY: 与 GetDC 配对，只释放一次
+                let _ = unsafe { ReleaseDC(None, self.0) };
+            }
+        }
+
+        // SAFETY: 无窗口句柄表示屏幕 DC；用完由 DcGuard 释放
+        let dc = DcGuard(unsafe { GetDC(None) });
+
+        let result = (|| -> Option<Vec<u8>> {
+            if color.is_invalid() {
+                // 无彩色位图的老图标（仅掩码）：WebView 无从还原颜色，回退占位
+                return None;
+            }
+            let mut bitmap = BITMAP::default();
+            // SAFETY: bitmap 缓冲与 color 位图类型匹配
+            if unsafe {
+                GetObjectW(
+                    color.into(),
+                    std::mem::size_of::<BITMAP>() as i32,
+                    Some(&mut bitmap as *mut BITMAP as *mut core::ffi::c_void),
+                )
+            } == 0
+            {
+                return None;
+            }
+            let width = bitmap.bmWidth;
+            let height = bitmap.bmHeight;
+            if width <= 0 || height <= 0 {
+                return None;
+            }
+
+            let mut pixels = vec![0u8; (width * height * 4) as usize];
+            let mut info = bitmap_info_header(width, -height);
+            // SAFETY: pixels 长度与请求行数匹配；info 与 32bpp 输出格式一致
+            if unsafe {
+                GetDIBits(
+                    dc.0,
+                    color,
+                    0,
+                    height as u32,
+                    Some(pixels.as_mut_ptr() as *mut core::ffi::c_void),
+                    &mut info,
+                    DIB_RGB_COLORS,
+                )
+            } == 0
+            {
+                return None;
+            }
+
+            // 32bpp 图标位图不保证 alpha 有效：全零时按掩码重建透明度
+            // （掩码读成 32bpp 后白 = 透明，黑 = 不透明）
+            if pixels.as_chunks::<4>().0.iter().all(|px| px[3] == 0) && !mask.is_invalid() {
+                let mut mask_pixels = vec![0u8; (width * height * 4) as usize];
+                let mut mask_info = bitmap_info_header(width, -height);
+                // SAFETY: 同上，针对掩码位图
+                let mask_read = unsafe {
+                    GetDIBits(
+                        dc.0,
+                        mask,
+                        0,
+                        height as u32,
+                        Some(mask_pixels.as_mut_ptr() as *mut core::ffi::c_void),
+                        &mut mask_info,
+                        DIB_RGB_COLORS,
+                    )
+                };
+                if mask_read == 0 {
+                    // 掩码读不出就无法重建透明度，编码出来是一张全透明的
+                    // 不可见图标，宁可回退占位（Miss）
+                    return None;
+                }
+                for (px, m) in pixels
+                    .as_chunks_mut::<4>()
+                    .0
+                    .iter_mut()
+                    .zip(mask_pixels.as_chunks::<4>().0.iter())
+                {
+                    px[3] = if m[0] != 0 || m[1] != 0 || m[2] != 0 {
+                        0
+                    } else {
+                        0xFF
+                    };
+                }
+            }
+
+            let mut rgba = pixels;
+            for px in rgba.as_chunks_mut::<4>().0 {
+                px.swap(0, 2); // BGRA → RGBA
+            }
+
+            // SHGFI_LARGEICON 在高 DPI 下可能给出 48×48，统一缩到 32×32
+            if width != ICON_SIZE as i32 || height != ICON_SIZE as i32 {
+                let resized = image::imageops::resize(
+                    &image::RgbaImage::from_raw(width as u32, height as u32, rgba)
+                        .expect("尺寸与像素长度已在上方校验"),
+                    ICON_SIZE,
+                    ICON_SIZE,
+                    image::imageops::FilterType::Triangle,
+                );
+                rgba = resized.into_raw();
+                return crate::platform::imaging::rgba_to_png(ICON_SIZE, ICON_SIZE, &rgba).ok();
+            }
+            crate::platform::imaging::rgba_to_png(ICON_SIZE, ICON_SIZE, &rgba).ok()
+        })();
+
+        // SAFETY: GetIconInfo 输出的两张位图归调用方所有，必须删除
+        let _ = unsafe { DeleteObject(color.into()) };
+        let _ = unsafe { DeleteObject(mask.into()) };
+
+        result
+    }
+
+    /// 32bpp top-down `BITMAPINFO`（供 `GetDIBits` 读 RGBA）
+    fn bitmap_info_header(width: i32, height: i32) -> windows::Win32::Graphics::Gdi::BITMAPINFO {
+        use windows::Win32::Graphics::Gdi::{BITMAPINFO, BITMAPINFOHEADER};
+
+        let mut info = BITMAPINFO::default();
+        info.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+        info.bmiHeader.biWidth = width;
+        info.bmiHeader.biHeight = height; // 负数 = top-down
+        info.bmiHeader.biPlanes = 1;
+        info.bmiHeader.biBitCount = 32;
+        info.bmiHeader.biCompression = 0; // BI_RGB
+        info
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -597,6 +773,28 @@ mod windows_impl {
                 let reason = shell_error_reason(code);
                 assert!(!reason.contains(&code.to_string()));
             }
+        }
+
+        #[test]
+        #[allow(non_snake_case)]
+        fn 提取当前exe图标为32x32PNG() {
+            use image::GenericImageView;
+
+            let exe = std::env::current_exe()
+                .expect("定位测试可执行文件")
+                .to_string_lossy()
+                .to_string();
+            let png =
+                extract_icon_png(&exe).expect("exe 应能提取图标（无资源时系统也会给默认图标）");
+            assert_eq!(&png[0..4], b"\x89PNG", "输出应为 PNG 字节");
+            let decoded = image::load_from_memory(&png).expect("图标 PNG 应可解码");
+            assert_eq!(decoded.dimensions(), (32, 32));
+        }
+
+        #[test]
+        #[allow(non_snake_case)]
+        fn 不存在的目标提取图标返回空() {
+            assert!(extract_icon_png(r"C:\quick-not-exist\missing.exe").is_none());
         }
     }
 } // mod windows_impl
@@ -689,6 +887,70 @@ mod linux_impl {
     /// 允许抢占前台（Linux 空操作）
     pub fn allow_foreground() {
         // Linux 无此概念
+    }
+
+    /// 应用图标 PNG 字节（T-614）
+    ///
+    /// 只解析 `.desktop` `Icon=` 引用到的 PNG 文件（hicolor 主题目录从大到小 +
+    /// 绝对路径 + pixmaps）；XPM/SVG WebView 无法解码，与解析失败一样返回
+    /// `None` 回退占位图标。
+    pub fn extract_icon_png(icon_ref: &str) -> Option<Vec<u8>> {
+        let path = resolve_icon_png(icon_ref)?;
+        std::fs::read(path).ok()
+    }
+
+    /// 图标引用（主题名或绝对路径）→ PNG 文件路径
+    fn resolve_icon_png(icon_ref: &str) -> Option<PathBuf> {
+        let ref_path = PathBuf::from(icon_ref);
+        if ref_path.is_absolute() {
+            return is_png(&ref_path).then_some(ref_path);
+        }
+
+        for size in ["256x256", "128x128", "64x64", "48x48", "32x32"] {
+            for dir in icon_dirs() {
+                let candidate = dir
+                    .join("icons")
+                    .join("hicolor")
+                    .join(size)
+                    .join("apps")
+                    .join(format!("{icon_ref}.png"));
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+        for dir in icon_dirs() {
+            let candidate = dir.join("pixmaps").join(format!("{icon_ref}.png"));
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+        None
+    }
+
+    /// 图标查找根：`$XDG_DATA_DIRS` + 用户 local share + /usr/share 兜底
+    fn icon_dirs() -> Vec<PathBuf> {
+        let mut dirs: Vec<PathBuf> = std::env::var_os("XDG_DATA_DIRS")
+            .map(|value| std::env::split_paths(&value).collect())
+            .unwrap_or_default();
+        if let Some(home) = dirs::home_dir() {
+            dirs.push(home.join(".local").join("share"));
+        }
+        let fallback = PathBuf::from("/usr/share");
+        if !dirs.contains(&fallback) {
+            dirs.push(fallback);
+        }
+        dirs
+    }
+
+    /// 路径是否为存在的 PNG 文件
+    fn is_png(path: &Path) -> bool {
+        path.is_file()
+            && path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| ext.eq_ignore_ascii_case("png"))
+                .unwrap_or(false)
     }
 
     /// 启动 Win32 应用（Linux 用 std::process::Command）

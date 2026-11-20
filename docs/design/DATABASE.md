@@ -49,6 +49,20 @@ CREATE VIRTUAL TABLE clipboard_fts USING fts5(
 
 `settings`、`app_index`、`usage_stat`、`meta` 随对应功能以独立 migration 落地。
 
+## 数据目录文件布局
+
+```
+<数据目录>/          # Windows: %APPDATA%\quick
+├── quick.db         # 数据库（WAL 模式）
+├── blobs/
+│   ├── <hash前两位>/<hash>.png|.dib   # 剪贴板原图（新条目统一 PNG，T-612）
+│   └── thumbs/<hash>.png              # 128px 缩略图（T-613，纳入 blob 预算）
+└── icons/
+    └── <hash前两位>/<hash>.png        # 启动器应用图标缓存（T-614，不清理，量小）
+```
+
+库里只存相对路径，换数据目录不用改库；blob 预算只覆盖 `blobs/`（原图 + 缩略图）。
+
 ## 迁移
 
 - `PRAGMA user_version` 为当前版本

@@ -11,6 +11,10 @@ vi.mock('../lib/ipc', () => ({
   },
 }));
 
+vi.mock('@tauri-apps/api/core', () => ({
+  convertFileSrc: vi.fn((path: string) => `asset://${path}`),
+}));
+
 const results: LauncherItem[] = [
   {
     key: 'chrome.exe',
@@ -95,6 +99,47 @@ describe('启动器面板', () => {
     await waitFor(() =>
       expect(ipc.launcherExecute).toHaveBeenCalledWith('cmd:锁屏'),
     );
+  });
+
+  it('有图标的条目渲染图标，无图标回退占位符号', async () => {
+    mockResult({
+      items: [
+        {
+          key: 'chrome.exe',
+          title: 'Google Chrome',
+          subtitle: null,
+          kind: 'app',
+          icon: 'C:\\Data\\icons\\ab\\hash.png',
+          score: 0.9,
+        },
+        {
+          key: 'canary.exe',
+          title: 'Chrome Canary',
+          subtitle: null,
+          kind: 'app',
+          icon: null,
+          score: 0.8,
+        },
+        {
+          key: 'cmd:锁屏',
+          title: '锁屏',
+          subtitle: '锁定屏幕',
+          kind: 'command',
+          icon: null,
+          score: 1,
+        },
+      ],
+      hint: null,
+    });
+    const { container } = render(<LauncherPanel />);
+
+    await waitFor(() => expect(screen.getByText('Google Chrome')).toBeTruthy());
+    const img = container.querySelector<HTMLImageElement>('img.qw-row-icon-img');
+    expect(img?.src).toBe('asset://C:\\Data\\icons\\ab\\hash.png');
+    // 无图标的应用与命令条目回退占位符号
+    const icons = container.querySelectorAll('.qw-row-icon');
+    expect(icons[0]?.textContent).toBe('▣');
+    expect(icons[1]?.textContent).toBe('⌘');
   });
 
   it('打开失败时底部显示错误且面板保留', async () => {

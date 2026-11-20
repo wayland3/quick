@@ -43,10 +43,13 @@ source_weight: start_menu 1.0 | app_paths 0.95 | uwp 0.9 | builtin 1.05
 - 刷新：启动时后台构建一次，之后不轮询；用户在启动器 `> 重建索引` 手动触发。应用安装频率低，轮询只会白白反复扫盘。
 - `rows_equal` 比对后才写库，内容没变不产生写事务。
 
-### 未实现：应用图标提取（R-003）
+### 应用图标
 
-`icon_path` 只保存 `.lnk` 里指向的图标位置字符串（如 `C:\Windows\System32\shell32.dll,3`），既不提取也不落盘；前端列表用 `▣` 占位。
+目标：列表行显示应用真实图标，替代 `▣` 占位。
 
-- 卡点同 R-001：`.ico` 含多尺寸与 PNG/BMP 混合压缩，要解码必须走 WIC 或 `ExtractIconEx` / `SHGetFileInfo`。
-- 当前列表是纯文字，图标属于视觉增强，不影响命中与启动。
-- 若要实现：`platform/apps.rs` 增加 `extract_icon(target) -> Option<Vec<u8>>`（WIC 解码后转 PNG），索引重建时写入 `icons/` 并把相对路径存进 `icon_path`；前端用 `convertFileSrc` 显示。
+- **提取（Windows）**：`platform/apps.rs::extract_icon_png` 用 `SHGetFileInfoW(SHGFI_ICON | SHGFI_LARGEICON)` 一次调用覆盖 exe / dll / .lnk 三种来源，系统自动选最佳尺寸；HICON 经 `GetIconInfo` + `GetDIBits`（32bpp top-down）取像素，alpha 全零时按掩码重建透明度（老图标不带 alpha），非 32×32（高 DPI 下 LARGEICON 可能是 48）缩放到 32×32 后编码 PNG。不引入新 crate。
+- **提取（Linux）**：`.desktop` 的 `Icon=` 解析到 PNG 文件（`hicolor` 主题目录从大到小 + `/usr/share/pixmaps` + 绝对路径）；XPM 与 SVG 一样无法被 WebView 渲染，跳过回退占位——为它们引入解码/渲染依赖不划算。
+- **时机**：在索引重建线程内做（启动构建 + `> 重建索引`），落在 `rebuild_index` 的 `attach_icons`：`rows_equal` 比对前填充，比对结果因此天然含图标变化。不碰查询热路径。
+- **缓存**：`icons/<sha256(key) 前两位>/<hash>.png`，32×32 保留透明；**存在即复用不再提取**——启动重建每次都跑，逐个重新提取会把后台线程拖到秒级；应用更新后图标滞后到缓存清空才刷新，与系统图标缓存一致。`app_index.icon_path` 存缓存 PNG 的相对路径，`launcher_query` 出口绝对化供前端 `convertFileSrc`。
+- **UI**：列表行渲染 32×32 `<img>`（`object-fit: contain`），无图标回退 `▣`，命令回退 `⌘`；assetProtocol scope 已加 `$APPDATA/icons/**`。
+- **范围外**：UWP 图标（`attach_icons` 显式置空）。当前 UWP 枚举本身是占位实现（`UWP App`），Appx 包内 logo 解析后续单独立任务。

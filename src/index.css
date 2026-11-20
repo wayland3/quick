@@ -232,8 +232,26 @@ code {
 
 .qw-row-icon {
   flex: none;
-  width: 20px;
+  /* 与 32px 缩略图/图标列同宽，避免「有图行 + 占位行」标题左缘参差 */
+  width: 32px;
   text-align: center;
+}
+
+/* 图片缩略图（T-613）：32×32 覆盖裁剪，替代类型图标 */
+.qw-row-thumb {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  object-fit: cover;
+  border-radius: 4px;
+}
+
+/* 应用图标（T-614）：32×32 保持比例，无图标回退 ▣ */
+.qw-row-icon-img {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  object-fit: contain;
 }
 
 .qw-row-preview {

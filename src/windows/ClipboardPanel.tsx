@@ -265,9 +265,20 @@ export function ClipboardPanel() {
     const unlistenCleaned = listen('clipboard://cleaned', () => {
       void fetchAll(PAGE_SIZE, null);
     });
+    // 缩略图后台生成完成：就地替换该行，不重查列表
+    const unlistenThumb = listen<{ id: number; thumb_path: string }>(
+      'clipboard://thumb-ready',
+      (event) => {
+        const { id, thumb_path } = event.payload;
+        setItems((prev) =>
+          prev.map((it) => (it.id === id ? { ...it, thumb_path } : it)),
+        );
+      },
+    );
     return () => {
       unlisten.then((off) => off());
       unlistenCleaned.then((off) => off());
+      unlistenThumb.then((off) => off());
     };
   }, [fetchAll]);
 

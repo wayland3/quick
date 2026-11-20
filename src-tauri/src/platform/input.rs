@@ -93,39 +93,43 @@ mod windows_impl {
     pub fn send_copy_windows() -> Result<(), AppError> {
         clear_modifiers()?;
 
-        let inputs = [
+        // 整组按键一次提交：事件连续注入系统输入流，中间没有焦点切换窗口
+        let inputs = copy_inputs();
+        send_inputs(&inputs)?;
+
+        Ok(())
+    }
+
+    /// Ctrl+C 的按键序列（按下 → 释放，单批提交）
+    pub(super) fn copy_inputs() -> [INPUT; 4] {
+        [
             make_key_input(VK_CONTROL.0, 0, KEYBD_EVENT_FLAGS(0)),
             make_key_input(VIRTUAL_KEY(0x43).0, 0, KEYBD_EVENT_FLAGS(0)), // 'C'
             make_key_input(VIRTUAL_KEY(0x43).0, 0, KEYEVENTF_KEYUP),
             make_key_input(VK_CONTROL.0, 0, KEYEVENTF_KEYUP),
-        ];
-
-        // 按键间隔 10ms
-        for input in &inputs {
-            send_inputs(&[*input])?;
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-
-        Ok(())
+        ]
     }
 
     pub fn send_paste_windows() -> Result<(), AppError> {
         clear_modifiers()?;
 
-        let inputs = [
+        // R-015：旧实现逐个事件发送 + 10ms 间隔，DOWN 与 UP 之间一旦焦点变化，
+        // 后续 KEYUP 会落到别的窗口（甚至给目标留下卡住的修饰键）。改为整组
+        // 一次 SendInput，KEYUP 只会落在这组按键已确立的焦点上下文里。
+        let inputs = paste_inputs();
+        send_inputs(&inputs)?;
+
+        Ok(())
+    }
+
+    /// Ctrl+V 的按键序列（按下 → 释放，单批提交）
+    pub(super) fn paste_inputs() -> [INPUT; 4] {
+        [
             make_key_input(VK_CONTROL.0, 0, KEYBD_EVENT_FLAGS(0)),
             make_key_input(VIRTUAL_KEY(0x56).0, 0, KEYBD_EVENT_FLAGS(0)), // 'V'
             make_key_input(VIRTUAL_KEY(0x56).0, 0, KEYEVENTF_KEYUP),
             make_key_input(VK_CONTROL.0, 0, KEYEVENTF_KEYUP),
-        ];
-
-        // 按键间隔 10ms
-        for input in &inputs {
-            send_inputs(&[*input])?;
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-
-        Ok(())
+        ]
     }
 
     fn clear_modifiers() -> Result<(), AppError> {
@@ -357,5 +361,44 @@ mod tests {
         let text = "你好";
         let utf16: Vec<u16> = text.encode_utf16().collect();
         assert_eq!(utf16.len(), 2); // 中文不在代理对范围
+    }
+
+    /// R-015：整组按键单批提交，顺序必须是 DOWN → UP（KEYUP 不单独裸发）
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[allow(non_snake_case)]
+    fn 粘贴按键单批且按下先于释放() {
+        use windows::Win32::UI::Input::KeyboardAndMouse::{INPUT, KEYEVENTF_KEYUP, VK_CONTROL};
+
+        let inputs = super::windows_impl::paste_inputs();
+        let vk = |input: &INPUT| unsafe { input.Anonymous.ki.wVk.0 };
+        let flags = |input: &INPUT| unsafe { input.Anonymous.ki.dwFlags };
+
+        assert_eq!(vk(&inputs[0]), VK_CONTROL.0, "首键应是 Ctrl 按下");
+        assert!(!flags(&inputs[0]).contains(KEYEVENTF_KEYUP));
+        assert_eq!(vk(&inputs[1]), 0x56, "次键应是 V 按下");
+        assert!(!flags(&inputs[1]).contains(KEYEVENTF_KEYUP));
+        assert_eq!(vk(&inputs[2]), 0x56, "第三键应是 V 释放");
+        assert!(flags(&inputs[2]).contains(KEYEVENTF_KEYUP));
+        assert_eq!(vk(&inputs[3]), VK_CONTROL.0, "末键应是 Ctrl 释放");
+        assert!(flags(&inputs[3]).contains(KEYEVENTF_KEYUP));
+    }
+
+    /// R-015：复制按键同样单批提交
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[allow(non_snake_case)]
+    fn 复制按键单批且按下先于释放() {
+        use windows::Win32::UI::Input::KeyboardAndMouse::{INPUT, KEYEVENTF_KEYUP, VK_CONTROL};
+
+        let inputs = super::windows_impl::copy_inputs();
+        let vk = |input: &INPUT| unsafe { input.Anonymous.ki.wVk.0 };
+        let flags = |input: &INPUT| unsafe { input.Anonymous.ki.dwFlags };
+
+        assert_eq!(vk(&inputs[0]), VK_CONTROL.0);
+        assert_eq!(vk(&inputs[1]), 0x43, "次键应是 C 按下");
+        assert_eq!(vk(&inputs[2]), 0x43);
+        assert!(flags(&inputs[2]).contains(KEYEVENTF_KEYUP));
+        assert!(flags(&inputs[3]).contains(KEYEVENTF_KEYUP));
     }
 }

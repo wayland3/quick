@@ -469,20 +469,156 @@ impl IndexRebuildLock {
 
 /// 扫描并写入索引；结果与现有索引一致时跳过写库
 pub fn rebuild_index(db_path: &Path, lock: &IndexRebuildLock) -> Result<usize, AppError> {
+    rebuild_index_with_stop(db_path, lock, None)
+}
+
+/// 带停止信号的重建：`IndexRefresher` 后台线程传入，退出时提前结束图标提取
+/// （首启几百个应用的批量提取会拉长 join 等待；剩余行下次重建续跑）
+pub fn rebuild_index_with_stop(
+    db_path: &Path,
+    lock: &IndexRebuildLock,
+    stop: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<usize, AppError> {
     let _guard = lock.guard();
 
     let scan = collect();
+    let data_dir = db_path
+        .parent()
+        .ok_or_else(|| AppError::Storage("invalid database path".to_string()))?;
+    let mut rows = scan.rows;
+    attach_icons(&mut rows, data_dir, stop);
+
     let mut storage = ClipboardStorage::open_write_at(db_path)?;
     let existing = storage.load_app_index()?;
 
-    if rows_equal(&existing, &scan.rows) {
+    if rows_equal(&existing, &rows) {
         log::info!("app index unchanged: rows={}", existing.len());
         return Ok(existing.len());
     }
 
-    let written = storage.replace_app_index(&scan.rows, now_ms())?;
+    let written = storage.replace_app_index(&rows, now_ms())?;
     log::info!("app index refreshed: rows={}", written);
     Ok(written)
+}
+
+/// 图标缓存结果（供统计日志）
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum IconCache {
+    /// 缓存命中，未再提取
+    Hit(String),
+    /// 首次提取并写入缓存
+    Written(String),
+    /// 提取或写盘失败，无图标（前端占位）
+    Miss,
+}
+
+/// 图标缓存相对路径：`icons/<sha256(key) 前两位>/<hash>.png`
+fn icon_relative_path(key: &str) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    if key.is_empty() {
+        return None;
+    }
+    let digest = Sha256::digest(key.as_bytes());
+    let hash = format!("{:x}", digest);
+    Some(format!("icons/{}/{}.png", &hash[..2], hash))
+}
+
+/// 提取并缓存应用图标（T-614）
+///
+/// 提取是慢路径（`SHGetFileInfo` + GDI），缓存文件存在即复用——启动重建
+/// 每次都跑，几百个应用逐个重新提取会把后台线程拖到秒级；图标更新滞后
+/// 到缓存被清空才生效，与系统图标缓存行为一致。
+fn ensure_icon_cached<F: FnOnce() -> Option<Vec<u8>>>(
+    data_dir: &Path,
+    key: &str,
+    extract: F,
+) -> IconCache {
+    let Some(relative) = icon_relative_path(key) else {
+        return IconCache::Miss;
+    };
+    let absolute = data_dir.join(&relative);
+    // 只判存在会把崩溃残留的 0 字节文件当命中，坏图标永远不自愈
+    let cached = absolute
+        .metadata()
+        .map(|meta| meta.len() > 0)
+        .unwrap_or(false);
+    if cached {
+        return IconCache::Hit(relative);
+    }
+
+    let Some(png) = extract() else {
+        return IconCache::Miss;
+    };
+    if let Some(parent) = absolute.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            log::warn!("app icon mkdir failed: {}", e);
+            return IconCache::Miss;
+        }
+    }
+    if let Err(e) = std::fs::write(&absolute, &png) {
+        log::warn!("app icon write failed: {}", e);
+        return IconCache::Miss;
+    }
+    IconCache::Written(relative)
+}
+
+/// 为 Win32 行填充图标缓存路径；UWP 图标范围外，显式置空
+///
+/// `stop` 命中时剩余行直接置空快速返回（不写来源字符串进库），
+/// 下次重建缓存命中已完成的、继续提取剩下的。
+fn attach_icons(
+    rows: &mut [AppIndexRow],
+    data_dir: &Path,
+    stop: Option<&std::sync::atomic::AtomicBool>,
+) {
+    use std::sync::atomic::Ordering;
+
+    let (mut hit, mut written, mut miss) = (0usize, 0usize, 0usize);
+
+    for row in rows.iter_mut() {
+        if let Some(stop) = stop {
+            if stop.load(Ordering::Relaxed) {
+                row.icon_path = None;
+                miss += 1;
+                continue;
+            }
+        }
+        if row.kind != KIND_WIN32 {
+            row.icon_path = None;
+            continue;
+        }
+        let key = row.key.clone();
+        // Windows 从目标可执行文件提取（SHGetFileInfo 覆盖 exe/dll/lnk）；
+        // Linux 从 .desktop 的 Icon= 引用提取（采集期暂存于 icon_path）
+        #[cfg(target_os = "windows")]
+        let source = row.target.clone();
+        #[cfg(target_os = "linux")]
+        let source = row.icon_path.clone().unwrap_or_else(|| row.target.clone());
+
+        match ensure_icon_cached(data_dir, &key, || {
+            crate::platform::apps::extract_icon_png(&source)
+        }) {
+            IconCache::Hit(path) => {
+                row.icon_path = Some(path);
+                hit += 1;
+            }
+            IconCache::Written(path) => {
+                row.icon_path = Some(path);
+                written += 1;
+            }
+            IconCache::Miss => {
+                row.icon_path = None;
+                miss += 1;
+            }
+        }
+    }
+
+    log::info!(
+        "app icons attached: hit={}, written={}, miss={}",
+        hit,
+        written,
+        miss
+    );
 }
 
 /// 行集合比较：与顺序无关，只比对持久化字段
@@ -528,8 +664,8 @@ impl IndexRefresher {
         let stop = Arc::new(AtomicBool::new(false));
         let stop_for_thread = Arc::clone(&stop);
         let handle = std::thread::spawn(move || {
-            // 启动时立即重建一次
-            if let Err(error) = rebuild_index(&db_path, &lock) {
+            // 启动时立即重建一次；首启批量提取图标期间收到退出信号可提前结束
+            if let Err(error) = rebuild_index_with_stop(&db_path, &lock, Some(&stop_for_thread)) {
                 log::warn!("app index initial rebuild failed: {}", error);
             }
             // 等待停止信号（不定时轮询）
@@ -738,6 +874,99 @@ mod tests {
             icon_path: None,
             aliases: Vec::new(),
         }
+    }
+
+    fn temp_data_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "quick-icon-{}-{}-{}",
+            tag,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn 图标缓存路径按key哈希且稳定() {
+        let first = icon_relative_path("c:/app/a.exe").expect("非空 key 应有路径");
+        assert!(
+            first.starts_with("icons/") && first.ends_with(".png"),
+            "{}",
+            first
+        );
+        // 同 key 稳定，不同 key 不同
+        assert_eq!(
+            icon_relative_path("c:/app/a.exe").as_deref(),
+            Some(first.as_str())
+        );
+        assert_ne!(icon_relative_path("c:/app/b.exe"), Some(first.clone()));
+        assert_eq!(icon_relative_path(""), None);
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn 图标缓存存在即复用不再提取() {
+        let dir = temp_data_dir("reuse");
+        let mut calls = 0usize;
+
+        let first = ensure_icon_cached(&dir, "k", || {
+            calls += 1;
+            Some(vec![1u8, 2, 3])
+        });
+        assert!(matches!(first, IconCache::Written(ref p) if dir.join(p).exists()));
+
+        let second = ensure_icon_cached(&dir, "k", || {
+            calls += 1;
+            Some(vec![9u8, 9])
+        });
+        assert!(matches!(second, IconCache::Hit(ref p) if dir.join(p).exists()));
+        assert_eq!(calls, 1, "缓存命中时不应再调用提取器");
+
+        // 缓存内容仍是首次写入的字节
+        let written = matches!(&first, IconCache::Written(p) if dir.join(p).exists());
+        assert!(written);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn 图标提取失败不落文件() {
+        let dir = temp_data_dir("miss");
+        let result = ensure_icon_cached(&dir, "k", || None);
+        assert_eq!(result, IconCache::Miss);
+        assert!(!dir.join(icon_relative_path("k").unwrap()).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn 附着图标uwp置空且失败目标也为空() {
+        let dir = temp_data_dir("attach");
+        let mut rows = vec![
+            // 目标不存在：提取失败 → icon_path None
+            app_test_row("quick-not-exist://missing.exe", "Missing"),
+            AppIndexRow {
+                key: "pkg!app".to_string(),
+                name: "UWP".to_string(),
+                target: "pkg!app".to_string(),
+                args: None,
+                kind: "uwp".to_string(),
+                source: "uwp".to_string(),
+                // UWP 即使采集期带了图标引用也必须置空（范围外）
+                icon_path: Some("whatever".to_string()),
+                aliases: Vec::new(),
+            },
+        ];
+
+        attach_icons(&mut rows, &dir, None);
+        assert_eq!(rows[0].icon_path, None, "提取失败应为 None");
+        assert_eq!(rows[1].icon_path, None, "UWP 应显式置空");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

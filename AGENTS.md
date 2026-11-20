@@ -20,6 +20,7 @@ Quick 是一个跨平台常驻的效率工具：快速找到应用，粘贴板�
 5. **记录日志**。在关键流程处记录日志，以便排查问题
 6. **明确问题**。遇到问题不要猜，停下来问我
 7. **文档同步**。改动完成后同步两边文档：行为/规格变化写进 `docs/product/features/` 对应功能文档；实现方案/机制变化写进 `docs/design/` 对应设计文档。只写结论与原因，不写流水账。
+8. 设计时可以参考已有的项目或者主流的项目，当有多个选项时要给选择
 
 常用命令见 `README.md`。提交前必须 `npm.cmd run verify` 全绿。
 
@@ -94,11 +95,11 @@ quick/
 
 ### 功能设计（每个产品功能对应一份）
 
-| 产品功能 | 设计文档 |
-|----------|---------|
-| 全局约定 | `docs/design/features/global.md` |
-| 启动器 | `docs/design/features/launcher.md` |
+| 产品功能   | 设计文档                            |
+|------------|-------------------------------------|
+| 全局约定   | `docs/design/features/global.md`    |
+| 启动器     | `docs/design/features/launcher.md`  |
 | 剪贴板历史 | `docs/design/features/clipboard.md` |
-| 设置项 | `docs/design/features/settings.md` |
+| 设置项     | `docs/design/features/settings.md`  |
 
 改某个功能时，先读对应的产品文档，再读同名的功能设计文档；跨功能的架构/数据库/IPC 按上表取。
