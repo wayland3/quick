@@ -9,10 +9,8 @@ import { applyTheme } from './lib/theme';
 import type { Theme } from './lib/theme';
 
 function App() {
-  const [pingResult, setPingResult] = useState<string>('');
-  const [error, setError] = useState<string>('');
-  const [mode, setMode] = useState<string>('');
   const [toast, setToast] = useState<{ message: string; level: string } | null>(null);
+  const [mode, setMode] = useState<string>('');
   // 同步初始化，避免首帧渲染错误内容
   const [isSettingsWindow] = useState(() => getCurrentWindow().label === 'settings');
 
@@ -23,10 +21,6 @@ function App() {
   }, [toast]);
 
   useEffect(() => {
-    ipc.appPing()
-      .then((result) => setPingResult(result))
-      .catch((err) => setError(String(err)));
-
     // 启动时读取设置并应用初始主题
     ipc.settingsGet()
       .then((settings) => applyTheme(settings.theme as Theme))
@@ -170,8 +164,8 @@ function App() {
           role="alert"
           className={
             toast.level === 'error'
-              ? 'fixed bottom-4 left-1/2 -translate-x-1/2 rounded-md bg-red-600/90 px-4 py-2 text-sm text-white shadow-lg'
-              : 'fixed bottom-4 left-1/2 -translate-x-1/2 rounded-md bg-slate-700/90 px-4 py-2 text-sm text-white shadow-lg'
+              ? 'fixed bottom-4 left-1/2 -translate-x-1/2 rounded-sm border-l-2 border-[var(--danger)] bg-[var(--surface)] px-4 py-2 text-sm text-[var(--danger)] shadow-sm'
+              : 'fixed bottom-4 left-1/2 -translate-x-1/2 rounded-sm border-l-2 border-[var(--accent)] bg-[var(--surface)] px-4 py-2 text-sm text-[var(--text)] shadow-sm'
           }
         >
           {toast.message}
@@ -182,17 +176,7 @@ function App() {
         <ClipboardPanel />
       ) : mode === 'launcher' ? (
         <LauncherPanel />
-      ) : (
-        <div className="qw-placeholder">
-          <h1 className="mb-4 text-4xl font-bold">Quick</h1>
-          <p className="mb-2 text-slate-400">脚手架已就绪，等待业务开发</p>
-          {mode && <p className="mt-4 text-sm text-blue-400">当前模式：{mode}</p>}
-          {pingResult && (
-            <p className="mt-4 text-sm text-green-400">后端连通：{pingResult}</p>
-          )}
-          {error && <p className="mt-4 text-sm text-red-400">后端未就绪：{error}</p>}
-        </div>
-      )}
+      ) : null}
     </main>
   );
 }

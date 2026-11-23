@@ -428,9 +428,6 @@ export function ClipboardPanel() {
   return (
     <section className="qw-panel" onKeyDown={handleKeyDown} aria-label="剪贴板历史">
       <header className="qw-search">
-        <span className="qw-search-icon" aria-hidden="true">
-          🔍
-        </span>
         <input
           ref={inputRef}
           className="qw-search-input"
@@ -446,7 +443,7 @@ export function ClipboardPanel() {
           onCompositionEnd={() => {
             composingRef.current = false;
           }}
-          placeholder="搜索剪贴板"
+          placeholder="搜索剪贴板…"
           aria-label="搜索剪贴板"
           autoFocus
           spellCheck={false}
@@ -493,13 +490,13 @@ export function ClipboardPanel() {
         <div
           role="alertdialog"
           aria-label="清空历史确认"
-          className="flex items-center gap-3 border-t border-slate-700 px-3 py-2 text-xs text-slate-200"
+          className="flex items-center gap-4 border-t border-[var(--border)] px-4 py-3 text-xs"
         >
-          <span>清空历史？</span>
+          <span className="text-[var(--text)]">清空历史？</span>
           <button
             type="button"
             tabIndex={-1}
-            className="rounded bg-slate-700 px-2 py-1"
+            className="text-[var(--accent)] underline underline-offset-4"
             onMouseDown={(event) => event.preventDefault()}
             onClick={() => clearHistory(false)}
           >
@@ -508,7 +505,7 @@ export function ClipboardPanel() {
           <button
             type="button"
             tabIndex={-1}
-            className="rounded bg-red-600 px-2 py-1 text-white"
+            className="text-[var(--danger)] underline underline-offset-4"
             onMouseDown={(event) => event.preventDefault()}
             onClick={() => clearHistory(true)}
           >
@@ -517,7 +514,7 @@ export function ClipboardPanel() {
           <button
             type="button"
             tabIndex={-1}
-            className="rounded px-2 py-1 text-slate-400"
+            className="text-[var(--text-muted)] hover:text-[var(--text)]"
             onMouseDown={(event) => event.preventDefault()}
             onClick={() => {
               setConfirmClear(false);

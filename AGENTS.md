@@ -31,7 +31,7 @@ quick/
 ├── AGENTS.md                  # 本文件
 ├── TASKS.md                   # 任务与进度（唯一进度源）
 ├── docs/                      # 规格、架构、编码规范、平台笔记、UI、ADR
-├── scripts/                   # 环境检查等脚本
+├── scripts/                   # 环境检查等脚本·````````````````````````````````````````````
 ├── .opencode/skills/          # feature-slice / tauri-win32
 ├── .opencode/commands/verify.md
 ├── src/                       # React 渲染层

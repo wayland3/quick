@@ -55,35 +55,46 @@ export function SettingsPanel() {
 
   return (
     <div className="flex h-full bg-[var(--bg)]">
-      {/* 左侧导航 */}
-      <nav className="flex w-[200px] flex-none flex-col border-r border-[var(--border)] bg-[var(--surface)] p-4">
-        <h1 className="mb-6 text-lg font-semibold text-[var(--text)]">设置</h1>
+      {/* 左侧导航：细线分隔，选中项左侧靛蓝竖线 */}
+      <nav className="flex w-[200px] flex-none flex-col border-r border-[var(--border)] p-6">
+        <h1
+          className="mb-8 text-lg text-[var(--text)]"
+          style={{ fontFamily: "'LXGW WenKai', 'Noto Serif SC', serif", letterSpacing: '0.05em' }}
+        >
+          设置
+        </h1>
         {TABS.map((tab) => (
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
-            className={`mb-2 rounded-lg px-4 py-2 text-left text-sm transition-colors ${
+            className={`relative mb-1 px-4 py-2.5 text-left text-sm transition-colors ${
               activeTab === tab.id
-                ? 'bg-[var(--accent)] text-white'
-                : 'text-[var(--text-muted)] hover:bg-[var(--surface-hover)]'
+                ? 'text-[var(--accent)] font-medium'
+                : 'text-[var(--text-muted)] hover:text-[var(--text)]'
             }`}
           >
+            {activeTab === tab.id && (
+              <span
+                className="absolute left-0 top-2 bottom-2 w-[2px] rounded-full"
+                style={{ background: 'var(--accent)' }}
+              />
+            )}
             {tab.label}
           </button>
         ))}
       </nav>
 
       {/* 右侧内容 */}
-      <div className="flex flex-1 flex-col overflow-y-auto p-8">
+      <div className="flex flex-1 flex-col overflow-y-auto p-10">
         {error && (
-          <div className="mb-4 rounded-lg bg-red-500/10 px-4 py-3 text-sm text-red-500">
+          <div className="mb-6 border-l-2 border-[var(--danger)] px-4 py-3 text-sm text-[var(--danger)]">
             {error}
           </div>
         )}
 
         {saving && (
-          <div className="mb-4 rounded-lg bg-blue-500/10 px-4 py-3 text-sm text-blue-500">
-            保存中...
+          <div className="mb-6 border-l-2 border-[var(--accent)] px-4 py-3 text-sm text-[var(--accent)]">
+            保存中…
           </div>
         )}
 
@@ -130,11 +141,16 @@ function GeneralTab({
 
   return (
     <div className="max-w-[560px]">
-      <h2 className="mb-6 text-base font-semibold text-[var(--text)]">常规设置</h2>
+      <h2
+        className="mb-8 text-base text-[var(--text)]"
+        style={{ fontFamily: "'LXGW WenKai', 'Noto Serif SC', serif", letterSpacing: '0.05em' }}
+      >
+        常规设置
+      </h2>
       
-      <div className="space-y-6">
+      <div className="space-y-8">
         {/* 开机自启 */}
-        <div className="flex items-start justify-between gap-4">
+        <div className="flex items-start justify-between gap-6">
           <div className="flex-1">
             <div className="text-sm font-medium text-[var(--text)]">开机自启</div>
             <div className="mt-1 text-xs text-[var(--text-muted)]">
@@ -153,7 +169,7 @@ function GeneralTab({
         </div>
 
         {/* 主题 */}
-        <div className="flex items-start justify-between gap-4">
+        <div className="flex items-start justify-between gap-6">
           <div className="flex-1">
             <div className="text-sm font-medium text-[var(--text)]">主题</div>
             <div className="mt-1 text-xs text-[var(--text-muted)]">
@@ -163,7 +179,7 @@ function GeneralTab({
           <select
             value={settings.theme}
             onChange={(e) => onUpdate('theme', e.target.value as Settings['theme'])}
-            className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-sm text-[var(--text)] focus:border-[var(--accent)] focus:outline-none"
+            className="rounded-sm border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-sm text-[var(--text)] focus:border-[var(--accent)] focus:outline-none"
           >
             <option value="system">跟随系统</option>
             <option value="light">浅色</option>
@@ -172,21 +188,21 @@ function GeneralTab({
         </div>
 
         {/* 恢复默认 */}
-        <div className="rounded-lg border border-[var(--border)] p-4">
+        <div className="border-t border-[var(--border)] pt-8">
           <div className="mb-3 text-sm font-medium text-[var(--text)]">恢复默认设置</div>
-          <div className="mb-3 text-xs text-[var(--text-muted)]">
+          <div className="mb-4 text-xs text-[var(--text-muted)]">
             将所有设置恢复为默认值（不影响剪贴板历史）
           </div>
           <button
             onClick={handleReset}
-            className="rounded-lg bg-red-500 px-4 py-2 text-sm text-white hover:bg-red-600"
+            className="text-sm text-[var(--danger)] underline underline-offset-4 hover:opacity-80"
           >
             {confirmReset ? '确认恢复' : '恢复默认'}
           </button>
           {confirmReset && (
             <button
               onClick={() => setConfirmReset(false)}
-              className="ml-2 rounded-lg border border-[var(--border)] px-4 py-2 text-sm text-[var(--text-muted)] hover:bg-[var(--surface-hover)]"
+              className="ml-4 text-sm text-[var(--text-muted)] hover:text-[var(--text)]"
             >
               取消
             </button>
@@ -214,11 +230,16 @@ function HotkeysTab({
 
   return (
     <div className="max-w-[560px]">
-      <h2 className="mb-6 text-base font-semibold text-[var(--text)]">热键设置</h2>
+      <h2
+        className="mb-8 text-base text-[var(--text)]"
+        style={{ fontFamily: "'LXGW WenKai', 'Noto Serif SC', serif", letterSpacing: '0.05em' }}
+      >
+        热键设置
+      </h2>
       
-      <div className="space-y-6">
+      <div className="space-y-8">
         {/* 启动器热键 */}
-        <div className="flex items-start justify-between gap-4">
+        <div className="flex items-start justify-between gap-6">
           <div className="flex-1">
             <div className="text-sm font-medium text-[var(--text)]">启动器</div>
             <div className="mt-1 text-xs text-[var(--text-muted)]">
@@ -235,7 +256,7 @@ function HotkeysTab({
         </div>
 
         {/* 剪贴板热键 */}
-        <div className="flex items-start justify-between gap-4">
+        <div className="flex items-start justify-between gap-6">
           <div className="flex-1">
             <div className="text-sm font-medium text-[var(--text)]">剪贴板历史</div>
             <div className="mt-1 text-xs text-[var(--text-muted)]">
@@ -252,12 +273,13 @@ function HotkeysTab({
         </div>
 
         {/* 提示 */}
-        <div className="rounded-lg bg-blue-500/10 px-4 py-3 text-xs text-blue-600">
-          提示：点击按钮后按下组合键即可录制。按 Esc 取消，按 Backspace 清空。
-        </div>
-        <div className="rounded-lg bg-blue-500/10 px-4 py-3 text-xs text-blue-600">
-          含 Win 键的组合（如 Win+空格）也可以录制：按住 Win 再按主键即可，
-          录制过程中系统可能短暂切走焦点，属正常现象。
+        <div className="border-t border-[var(--border)] pt-6">
+          <p className="text-xs text-[var(--text-muted)] leading-relaxed">
+            点击按钮后按下组合键即可录制。按 Esc 取消，按 Backspace 清空。
+          </p>
+          <p className="mt-2 text-xs text-[var(--text-muted)] leading-relaxed">
+            含 Win 键的组合（如 Win+空格）也可以录制：按住 Win 再按主键即可。
+          </p>
         </div>
       </div>
     </div>
@@ -338,11 +360,16 @@ function ClipboardTab({
 }) {
   return (
     <div className="max-w-[560px]">
-      <h2 className="mb-6 text-base font-semibold text-[var(--text)]">剪贴板设置</h2>
+      <h2
+        className="mb-8 text-base text-[var(--text)]"
+        style={{ fontFamily: "'LXGW WenKai', 'Noto Serif SC', serif", letterSpacing: '0.05em' }}
+      >
+        剪贴板设置
+      </h2>
       
-      <div className="space-y-6">
+      <div className="space-y-8">
         {/* 记录文本 */}
-        <div className="flex items-start justify-between gap-4">
+        <div className="flex items-start justify-between gap-6">
           <div className="flex-1">
             <div className="text-sm font-medium text-[var(--text)]">记录文本</div>
             <div className="mt-1 text-xs text-[var(--text-muted)]">
@@ -361,7 +388,7 @@ function ClipboardTab({
         </div>
 
         {/* 记录图片 */}
-        <div className="flex items-start justify-between gap-4">
+        <div className="flex items-start justify-between gap-6">
           <div className="flex-1">
             <div className="text-sm font-medium text-[var(--text)]">记录图片</div>
             <div className="mt-1 text-xs text-[var(--text-muted)]">
@@ -380,7 +407,7 @@ function ClipboardTab({
         </div>
 
         {/* 记录文件列表 */}
-        <div className="flex items-start justify-between gap-4">
+        <div className="flex items-start justify-between gap-6">
           <div className="flex-1">
             <div className="text-sm font-medium text-[var(--text)]">记录文件列表</div>
             <div className="mt-1 text-xs text-[var(--text-muted)]">
@@ -399,7 +426,7 @@ function ClipboardTab({
         </div>
 
         {/* 保留天数 */}
-        <div className="flex items-start justify-between gap-4">
+        <div className="flex items-start justify-between gap-6">
           <div className="flex-1">
             <div className="text-sm font-medium text-[var(--text)]">保留天数</div>
             <div className="mt-1 text-xs text-[var(--text-muted)]">
@@ -409,7 +436,7 @@ function ClipboardTab({
           <select
             value={settings.retention_days}
             onChange={(e) => onUpdate('retention_days', Number(e.target.value))}
-            className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-sm text-[var(--text)] focus:border-[var(--accent)] focus:outline-none"
+            className="rounded-sm border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-sm text-[var(--text)] focus:border-[var(--accent)] focus:outline-none"
           >
             <option value={7}>7 天</option>
             <option value={15}>15 天</option>
@@ -420,7 +447,7 @@ function ClipboardTab({
         </div>
 
         {/* 条数上限 */}
-        <div className="flex items-start justify-between gap-4">
+        <div className="flex items-start justify-between gap-6">
           <div className="flex-1">
             <div className="text-sm font-medium text-[var(--text)]">条数上限</div>
             <div className="mt-1 text-xs text-[var(--text-muted)]">
@@ -431,7 +458,7 @@ function ClipboardTab({
         </div>
 
         {/* blob 预算 */}
-        <div className="flex items-start justify-between gap-4">
+        <div className="flex items-start justify-between gap-6">
           <div className="flex-1">
             <div className="text-sm font-medium text-[var(--text)]">图片存储预算</div>
             <div className="mt-1 text-xs text-[var(--text-muted)]">
@@ -441,7 +468,7 @@ function ClipboardTab({
           <select
             value={settings.blob_budget_mb}
             onChange={(e) => onUpdate('blob_budget_mb', Number(e.target.value))}
-            className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-sm text-[var(--text)] focus:border-[var(--accent)] focus:outline-none"
+            className="rounded-sm border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-sm text-[var(--text)] focus:border-[var(--accent)] focus:outline-none"
           >
             {[100, 200, 500, 1000, 2000].map((mb) => (
               <option key={mb} value={mb}>
@@ -452,7 +479,7 @@ function ClipboardTab({
         </div>
 
         {/* 粘贴后还原 */}
-        <div className="flex items-start justify-between gap-4">
+        <div className="flex items-start justify-between gap-6">
           <div className="flex-1">
             <div className="text-sm font-medium text-[var(--text)]">粘贴后还原原剪贴板</div>
             <div className="mt-1 text-xs text-[var(--text-muted)]">
@@ -511,9 +538,9 @@ function MaxItemsInput({
         }}
         min={1000}
         max={50000}
-        className="w-24 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-sm text-[var(--text)] focus:border-[var(--accent)] focus:outline-none"
+        className="w-24 rounded-sm border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-sm text-[var(--text)] focus:border-[var(--accent)] focus:outline-none"
       />
-      {error && <div className="mt-1 text-xs text-red-500">{error}</div>}
+      {error && <div className="mt-1 text-xs text-[var(--danger)]">{error}</div>}
     </div>
   );
 }
@@ -537,34 +564,39 @@ function PrivacyTab() {
 
   return (
     <div className="max-w-[560px]">
-      <h2 className="mb-6 text-base font-semibold text-[var(--text)]">隐私设置</h2>
+      <h2
+        className="mb-8 text-base text-[var(--text)]"
+        style={{ fontFamily: "'LXGW WenKai', 'Noto Serif SC', serif", letterSpacing: '0.05em' }}
+      >
+        隐私设置
+      </h2>
       
-      <div className="space-y-6">
+      <div className="space-y-8">
         {/* 清空历史 */}
-        <div className="rounded-lg border border-[var(--border)] p-4">
+        <div className="border-b border-[var(--border)] pb-8">
           <div className="mb-3 text-sm font-medium text-[var(--text)]">清空历史记录</div>
-          <div className="mb-3 text-xs text-[var(--text-muted)]">
+          <div className="mb-4 text-xs text-[var(--text-muted)]">
             删除所有剪贴板历史记录（包括置顶项）
           </div>
           <button
             onClick={handleClearHistory}
-            className="rounded-lg bg-red-500 px-4 py-2 text-sm text-white hover:bg-red-600"
+            className="text-sm text-[var(--danger)] underline underline-offset-4 hover:opacity-80"
           >
             {confirmClear ? '确认清空' : '清空历史'}
           </button>
           {confirmClear && (
             <button
               onClick={() => setConfirmClear(false)}
-              className="ml-2 rounded-lg border border-[var(--border)] px-4 py-2 text-sm text-[var(--text-muted)] hover:bg-[var(--surface-hover)]"
+              className="ml-4 text-sm text-[var(--text-muted)] hover:text-[var(--text)]"
             >
               取消
             </button>
           )}
         </div>
 
-        <div className="rounded-lg bg-blue-500/10 px-4 py-3 text-xs text-blue-600">
-          提示：剪贴板数据仅本地存储，不会上传到云端。
-        </div>
+        <p className="text-xs text-[var(--text-muted)] leading-relaxed">
+          剪贴板数据仅本地存储，不会上传到云端。
+        </p>
       </div>
     </div>
   );
@@ -592,38 +624,54 @@ function AboutTab() {
 
   return (
     <div className="max-w-[560px]">
-      <h2 className="mb-6 text-base font-semibold text-[var(--text)]">关于</h2>
+      <h2
+        className="mb-8 text-base text-[var(--text)]"
+        style={{ fontFamily: "'LXGW WenKai', 'Noto Serif SC', serif", letterSpacing: '0.05em' }}
+      >
+        关于
+      </h2>
       
-      <div className="space-y-4">
-        <div className="rounded-lg border border-[var(--border)] p-4">
-          <div className="mb-2 text-sm font-medium text-[var(--text)]">Quick</div>
+      <div className="space-y-6">
+        <div className="border-b border-[var(--border)] pb-6">
+          <div
+            className="mb-2 text-lg text-[var(--text)]"
+            style={{ fontFamily: "'LXGW WenKai', 'Noto Serif SC', serif", letterSpacing: '0.1em' }}
+          >
+            _quick_
+          </div>
           <div className="text-xs text-[var(--text-muted)]">版本 0.1.0</div>
         </div>
 
-        <div className="rounded-lg border border-[var(--border)] p-4">
+        <div>
           <div className="mb-2 text-sm font-medium text-[var(--text)]">数据目录</div>
-          <div className="break-all text-xs text-[var(--text-muted)]">
+          <div
+            className="break-all text-xs text-[var(--text-muted)]"
+            style={{ fontFamily: "'JetBrains Mono', 'Cascadia Mono', Consolas, monospace" }}
+          >
             {dataDir ?? '读取中…'}
           </div>
-          {dirError && <div className="mt-1 text-xs text-red-500">{dirError}</div>}
+          {dirError && <div className="mt-1 text-xs text-[var(--danger)]">{dirError}</div>}
           <button
             onClick={openDataDir}
-            className="mt-3 rounded-lg border border-[var(--border)] px-3 py-1.5 text-sm text-[var(--text)] hover:bg-[var(--surface-hover)]"
+            className="mt-3 text-sm text-[var(--accent)] underline underline-offset-4 hover:opacity-80"
           >
             打开目录
           </button>
         </div>
 
-        <div className="rounded-lg border border-[var(--border)] p-4">
+        <div>
           <div className="mb-2 text-sm font-medium text-[var(--text)]">技术栈</div>
-          <div className="text-xs text-[var(--text-muted)]">
+          <div
+            className="text-xs text-[var(--text-muted)]"
+            style={{ fontFamily: "'JetBrains Mono', 'Cascadia Mono', Consolas, monospace" }}
+          >
             Tauri 2 + Rust + React 19 + TypeScript
           </div>
         </div>
 
-        <div className="rounded-lg bg-slate-500/10 px-4 py-3 text-xs text-slate-600">
+        <p className="border-t border-[var(--border)] pt-6 text-xs text-[var(--text-muted)] leading-relaxed">
           Quick 是一个跨平台常驻效率工具，提供启动器和剪贴板历史功能。
-        </div>
+        </p>
       </div>
     </div>
   );

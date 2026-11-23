@@ -5,16 +5,18 @@ interface EmptyStateProps {
   filterLabel: string;
 }
 
-/** 空态 / 无搜索结果（UI-SPEC §6） */
+/** 空态 / 无搜索结果：侘寂风，简洁克制 */
 export function EmptyState({ query, filterLabel }: EmptyStateProps) {
   if (query.trim()) {
     return (
       <div className="qw-empty" role="status">
         <span className="qw-empty-icon" aria-hidden="true">
-          🔍
+          ◯
         </span>
-        <p className="qw-empty-title">没有找到 “{query.trim()}”</p>
-        <p className="qw-empty-hint">换个关键词，或按 Tab 切换筛选</p>
+        <p className="qw-empty-title">无果</p>
+        <p className="qw-empty-hint">
+          未找到「{query.trim()}」· 按 Tab 切换筛选
+        </p>
       </div>
     );
   }
@@ -22,12 +24,12 @@ export function EmptyState({ query, filterLabel }: EmptyStateProps) {
   return (
     <div className="qw-empty" role="status">
       <span className="qw-empty-icon" aria-hidden="true">
-        📋
+        ◯
       </span>
       <p className="qw-empty-title">
-        {filterLabel === '全部' ? '还没有记录' : `「${filterLabel}」下还没有记录`}
+        {filterLabel === '全部' ? '空' : `「${filterLabel}」为空`}
       </p>
-      <p className="qw-empty-hint">复制任意内容后会出现在这里</p>
+      <p className="qw-empty-hint">复制内容后会出现在这里</p>
     </div>
   );
 }

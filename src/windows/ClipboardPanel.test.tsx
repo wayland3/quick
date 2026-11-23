@@ -99,7 +99,7 @@ describe('剪贴板面板', () => {
     render(<ClipboardPanel />);
 
     await waitFor(() => {
-      expect(screen.getByText('还没有记录')).toBeTruthy();
+      expect(screen.getByText('空')).toBeTruthy();
     });
   });
 
@@ -107,14 +107,14 @@ describe('剪贴板面板', () => {
     vi.mocked(ipc.clipboardList).mockResolvedValue(listResult([]));
 
     render(<ClipboardPanel />);
-    await waitFor(() => expect(screen.getByText('还没有记录')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('空')).toBeTruthy());
 
     fireEvent.change(screen.getByLabelText('搜索剪贴板'), {
       target: { value: '找不到的词' },
     });
 
     await waitFor(() => {
-      expect(screen.getByText('没有找到 “找不到的词”')).toBeTruthy();
+      expect(screen.getByText('无果')).toBeTruthy();
     });
   });
 

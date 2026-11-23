@@ -4,7 +4,6 @@ import { ipc } from '../lib/ipc';
 import type { LauncherItem } from '../lib/launcher';
 
 const DEBOUNCE_MS = 80;
-const EMPTY_QUERY_PLACEHOLDER = '搜索应用';
 
 function errorMessage(err: unknown, fallback = '搜索失败，请稍后重试'): string {
   if (err && typeof err === 'object' && 'message' in err) {
@@ -141,14 +140,11 @@ export function LauncherPanel() {
   return (
     <section className="qw-panel" onKeyDown={handleKeyDown} aria-label="启动器">
       <header className="qw-search">
-        <span className="qw-search-icon" aria-hidden="true">
-          🔍
-        </span>
         <input
           ref={inputRef}
           className="qw-search-input"
           value={query}
-          placeholder={EMPTY_QUERY_PLACEHOLDER}
+          placeholder="搜索应用…"
           onChange={(event) => setQuery(event.target.value)}
           aria-label="搜索应用"
         />
@@ -159,10 +155,10 @@ export function LauncherPanel() {
         {items.length === 0 && !loading ? (
           <div className="qw-empty">
             <div className="qw-empty-icon" aria-hidden="true">
-              🔍
+              🍃
             </div>
-            <div className="qw-empty-title">没有找到应用</div>
-            <div className="qw-empty-hint">换个别名，或稍等索引刷新</div>
+            <div className="qw-empty-title">暂无结果</div>
+            <div className="qw-empty-hint">换个关键词试试</div>
           </div>
         ) : (
           items.map((item, index) => {
