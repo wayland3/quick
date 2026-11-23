@@ -3114,6 +3114,7 @@ dependencies = [
  "dirs 7.0.0",
  "enigo",
  "global-hotkey",
+ "ico",
  "image",
  "log",
  "rusqlite",

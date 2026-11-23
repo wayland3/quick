@@ -601,14 +601,18 @@ fn attach_icons(
         }
         let key = row.key.clone();
         // Windows 从目标可执行文件提取（SHGetFileInfo 覆盖 exe/dll/lnk）；
-        // Linux 从 .desktop 的 Icon= 引用提取（采集期暂存于 icon_path）
+        // Linux 从 .desktop 的 Icon= 引用提取（采集期暂存于 icon_path），
+        // 同时传递 Exec 路径作为 fallback（用于从安装目录推断图标）
         #[cfg(target_os = "windows")]
-        let source = row.target.clone();
+        let (source, exec_path) = (row.target.clone(), None);
         #[cfg(target_os = "linux")]
-        let source = row.icon_path.clone().unwrap_or_else(|| row.target.clone());
+        let (source, exec_path) = (
+            row.icon_path.clone().unwrap_or_else(|| row.target.clone()),
+            Some(row.target.as_str()),
+        );
 
         match ensure_icon_cached(data_dir, &key, || {
-            crate::platform::apps::extract_icon_png(&source)
+            crate::platform::apps::extract_icon_png(&source, exec_path)
         }) {
             IconCache::Hit(path) => {
                 row.icon_path = Some(path);

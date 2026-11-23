@@ -614,7 +614,9 @@ mod windows_impl {
     /// `SHGetFileInfoW(SHGFI_ICON | SHGFI_LARGEICON)` 一次覆盖 exe / dll / .lnk
     /// 三种来源，系统自动选最佳尺寸；HICON 经 `GetIconInfo` + `GetDIBits`
     /// 取 RGBA 后编码 PNG。任何一步失败返回 `None`，由调用方回退占位图标。
-    pub fn extract_icon_png(target: &str) -> Option<Vec<u8>> {
+    ///
+    /// `exec_path` 在 Windows 上未使用，仅为保持与 Linux 版本签名一致。
+    pub fn extract_icon_png(target: &str, _exec_path: Option<&str>) -> Option<Vec<u8>> {
         use windows::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON};
 
         let wide = wide_str(target);
@@ -818,7 +820,7 @@ mod windows_impl {
                 .to_string_lossy()
                 .to_string();
             let png =
-                extract_icon_png(&exe).expect("exe 应能提取图标（无资源时系统也会给默认图标）");
+                extract_icon_png(&exe, None).expect("exe 应能提取图标（无资源时系统也会给默认图标）");
             assert_eq!(&png[0..4], b"\x89PNG", "输出应为 PNG 字节");
             let decoded = image::load_from_memory(&png).expect("图标 PNG 应可解码");
             assert_eq!(decoded.dimensions(), (32, 32));
@@ -827,7 +829,7 @@ mod windows_impl {
         #[test]
         #[allow(non_snake_case)]
         fn 不存在的目标提取图标返回空() {
-            assert!(extract_icon_png(r"C:\quick-not-exist\missing.exe").is_none());
+            assert!(extract_icon_png(r"C:\quick-not-exist\missing.exe", None).is_none());
         }
 
         #[test]
@@ -953,22 +955,50 @@ mod linux_impl {
 
     /// 应用图标 PNG 字节（T-614）
     ///
-    /// 只解析 `.desktop` `Icon=` 引用到的 PNG 文件（hicolor 主题目录从大到小 +
-    /// 绝对路径 + pixmaps）；XPM/SVG WebView 无法解码，与解析失败一样返回
-    /// `None` 回退占位图标。
-    pub fn extract_icon_png(icon_ref: &str) -> Option<Vec<u8>> {
-        let path = resolve_icon_png(icon_ref)?;
-        std::fs::read(path).ok()
-    }
-
-    /// 图标引用（主题名或绝对路径）→ PNG 文件路径
-    fn resolve_icon_png(icon_ref: &str) -> Option<PathBuf> {
+    /// 支持 PNG 与 ICO 两种来源：`.desktop` `Icon=` 可能引用主题图标名（最终解析为 PNG）、
+    /// 绝对路径 PNG、或绝对路径 ICO（如钉钉）。XPM/SVG WebView 无法解码，返回 `None`
+    /// 回退占位图标。
+    ///
+    /// `exec_path` 为可选的 Exec 路径，当主题图标搜索失败时，从该路径推断安装目录查找图标。
+    pub fn extract_icon_png(icon_ref: &str, exec_path: Option<&str>) -> Option<Vec<u8>> {
+        // 绝对路径：按扩展名分发
         let ref_path = PathBuf::from(icon_ref);
         if ref_path.is_absolute() {
-            return is_png(&ref_path).then_some(ref_path);
+            let ext = ref_path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_ascii_lowercase());
+            return match ext.as_deref() {
+                Some("png") if is_valid_png_file(&ref_path) => std::fs::read(&ref_path).ok(),
+                Some("ico") => convert_ico_to_png(&ref_path),
+                _ => None,
+            };
         }
 
-        for size in ["256x256", "128x128", "64x64", "48x48", "32x32"] {
+        // 主题图标名：在 hicolor + pixmaps 目录搜索 PNG 与 ICO
+        if let Some(icon) = resolve_theme_icon(icon_ref) {
+            return Some(icon);
+        }
+
+        // Fallback: 从 Exec 路径推断安装目录查找图标
+        if let Some(exec) = exec_path {
+            if let Some(icon) = resolve_icon_from_exec(exec, icon_ref) {
+                return Some(icon);
+            }
+        }
+
+        None
+    }
+
+    /// 主题图标名 → PNG 字节（hicolor 目录从大到小 + pixmaps，支持 PNG 与 ICO）
+    fn resolve_theme_icon(icon_ref: &str) -> Option<Vec<u8>> {
+        let sizes = [
+            "1024x1024", "512x512", "256x256", "192x192",
+            "128x128", "96x96", "72x72", "64x64", "48x48", "32x32",
+        ];
+
+        // hicolor 主题目录：先找 PNG（验证有效性），再找 ICO
+        for size in &sizes {
             for dir in icon_dirs() {
                 let candidate = dir
                     .join("icons")
@@ -976,17 +1006,106 @@ mod linux_impl {
                     .join(size)
                     .join("apps")
                     .join(format!("{icon_ref}.png"));
-                if candidate.is_file() {
-                    return Some(candidate);
+                if is_valid_png_file(&candidate) {
+                    return std::fs::read(&candidate).ok();
                 }
             }
         }
-        for dir in icon_dirs() {
-            let candidate = dir.join("pixmaps").join(format!("{icon_ref}.png"));
-            if candidate.is_file() {
-                return Some(candidate);
+        for size in &sizes {
+            for dir in icon_dirs() {
+                let candidate = dir
+                    .join("icons")
+                    .join("hicolor")
+                    .join(size)
+                    .join("apps")
+                    .join(format!("{icon_ref}.ico"));
+                if candidate.is_file() {
+                    return convert_ico_to_png(&candidate);
+                }
             }
         }
+
+        // pixmaps 目录
+        for dir in icon_dirs() {
+            let png = dir.join("pixmaps").join(format!("{icon_ref}.png"));
+            if is_valid_png_file(&png) {
+                return std::fs::read(&png).ok();
+            }
+            let ico = dir.join("pixmaps").join(format!("{icon_ref}.ico"));
+            if ico.is_file() {
+                return convert_ico_to_png(&ico);
+            }
+        }
+        None
+    }
+
+    /// 从 Exec 路径推断安装目录查找图标
+    ///
+    /// 解析 Exec 路径（跟随符号链接），在安装目录的常见位置查找 PNG 图标。
+    /// 支持 VSCode 等将图标放在安装目录而非系统主题目录的应用。
+    fn resolve_icon_from_exec(exec_path: &str, icon_ref: &str) -> Option<Vec<u8>> {
+        // 提取可执行文件路径（去除参数）
+        let exe = exec_path.split_whitespace().next()?;
+        let exe_path = PathBuf::from(exe);
+
+        // 跟随符号链接获取实际路径
+        let real_path = std::fs::canonicalize(&exe_path).ok()?;
+        let real_exe = PathBuf::from(&real_path);
+
+        // 推断安装根目录（向上查找，常见模式：/opt/<app>/bin/<exe> 或 /opt/<app>/<exe>）
+        let install_root = find_install_root(&real_exe)?;
+
+        // 在安装目录的常见位置查找图标
+        let icon_candidates = [
+            // VSCode 风格：resources/app/resources/linux/<icon>.png
+            install_root.join("resources").join("app").join("resources").join("linux").join(format!("{icon_ref}.png")),
+            install_root.join("resources").join("app").join("resources").join("linux").join(format!("{icon_ref}.ico")),
+            // 通用风格：resources/<icon>.png
+            install_root.join("resources").join(format!("{icon_ref}.png")),
+            install_root.join("resources").join(format!("{icon_ref}.ico")),
+            // 根目录风格
+            install_root.join(format!("{icon_ref}.png")),
+            install_root.join(format!("{icon_ref}.ico")),
+        ];
+
+        for candidate in &icon_candidates {
+            let ext = candidate
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_ascii_lowercase());
+            match ext.as_deref() {
+                Some("png") if is_valid_png_file(candidate) => {
+                    return std::fs::read(candidate).ok();
+                }
+                Some("ico") if candidate.is_file() => {
+                    return convert_ico_to_png(candidate);
+                }
+                _ => continue,
+            }
+        }
+
+        None
+    }
+
+    /// 从可执行文件路径推断安装根目录
+    ///
+    /// 向上查找，识别常见的安装目录结构（如 /opt/<app>/）。
+    fn find_install_root(exe_path: &Path) -> Option<PathBuf> {
+        let mut current = exe_path.parent()?;
+
+        // 向上遍历，查找 /opt/<app> 或 /usr/lib/<app> 等模式
+        for _ in 0..5 {
+            let parent = current.parent()?;
+            let parent_name = parent.file_name()?.to_str()?;
+
+            // 匹配 /opt/<app> 模式
+            if parent_name == "opt" || parent_name == "lib" {
+                return Some(current.to_path_buf());
+            }
+
+            current = parent;
+        }
+
         None
     }
 
@@ -1005,14 +1124,87 @@ mod linux_impl {
         dirs
     }
 
-    /// 路径是否为存在的 PNG 文件
-    fn is_png(path: &Path) -> bool {
-        path.is_file()
-            && path
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .map(|ext| ext.eq_ignore_ascii_case("png"))
-                .unwrap_or(false)
+    /// PNG 签名 + IHDR 解析 + 最小体积校验（过滤占位/损坏文件）
+    ///
+    /// 读取 PNG 头部解析宽高和色深，根据未压缩大小计算合理的最小文件体积。
+    /// 排除低质量占位图（如 1024×1024 但只有 2KB 的 4-bit 色深图标）。
+    fn is_valid_png_file(path: &Path) -> bool {
+        if !path.is_file() {
+            return false;
+        }
+        let file_size = match std::fs::metadata(path) {
+            Ok(m) => m.len(),
+            Err(_) => return false,
+        };
+        if file_size < 67 {
+            // PNG 签名 8 + IHDR chunk 最小 25 (length 4 + "IHDR" 4 + data 13 + crc 4)
+            return false;
+        }
+
+        let mut header = [0u8; 33]; // 8 (signature) + 4 (length) + 4 (IHDR) + 13 (data) + 4 (crc)
+        let mut file = match std::fs::File::open(path) {
+            Ok(f) => f,
+            Err(_) => return false,
+        };
+        use std::io::Read;
+        if file.read_exact(&mut header).is_err() {
+            return false;
+        }
+
+        // 验证 PNG 签名
+        if header[0..8] != [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A] {
+            return false;
+        }
+
+        // 验证 IHDR chunk
+        if &header[12..16] != b"IHDR" {
+            return false;
+        }
+
+        // 解析宽高（大端序）
+        let width = u32::from_be_bytes([header[16], header[17], header[18], header[19]]);
+        let height = u32::from_be_bytes([header[20], header[21], header[22], header[23]]);
+        let bit_depth = header[24];
+        let color_type = header[25];
+
+        // 计算 channels
+        let channels: u32 = match color_type {
+            0 => 1, // grayscale
+            2 => 3, // RGB
+            3 => 1, // indexed (palette)
+            4 => 2, // grayscale + alpha
+            6 => 4, // RGBA
+            _ => return false,
+        };
+
+        // 计算未压缩大小（字节）
+        let bytes_per_pixel = (bit_depth as u64 * channels as u64 + 7) / 8;
+        let uncompressed_size = width as u64 * height as u64 * bytes_per_pixel;
+
+        // 最小合理体积：未压缩大小的 0.5%，或至少 4KB，取较大值
+        // 对于 1024x1024 RGBA (4MB)，最小约 20KB
+        // 对于 256x256 RGBA (256KB)，最小约 4KB
+        let min_reasonable = (uncompressed_size / 200).max(4096);
+
+        file_size >= min_reasonable
+    }
+
+    /// 从 ICO 文件提取最大图标并转为 PNG 字节
+    fn convert_ico_to_png(path: &Path) -> Option<Vec<u8>> {
+        let data = std::fs::read(path).ok()?;
+        let cursor = std::io::Cursor::new(&data);
+        let icon_dir = ico::IconDir::read(cursor).ok()?;
+
+        // 选最大尺寸 + 最高色深的条目
+        let entry = icon_dir
+            .entries()
+            .iter()
+            .max_by_key(|e| (e.width() * e.height(), e.bits_per_pixel()))?;
+
+        let icon_image = entry.decode().ok()?;
+        let mut png_bytes = Vec::new();
+        icon_image.write_png(&mut png_bytes).ok()?;
+        Some(png_bytes)
     }
 
     /// 启动 Win32 应用（Linux 用 std::process::Command）

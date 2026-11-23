@@ -40,7 +40,9 @@ pub fn thumbnail_png(bytes: &[u8]) -> Result<Vec<u8>, AppError> {
 /// 原图以内容 hash 命名，缩略图沿用同名，与原图一一对应；
 /// 在 `blobs/` 下自动纳入现有 blob 预算与清空/淘汰逻辑。
 pub fn thumb_relative_path(blob_relative: &str) -> Option<String> {
-    let hash = Path::new(blob_relative)
+    // 统一路径分隔符：Windows 用 `\`，Linux/macOS 用 `/`
+    let normalized = blob_relative.replace('\\', "/");
+    let hash = Path::new(&normalized)
         .file_stem()
         .and_then(|stem| stem.to_str())?;
     if hash.is_empty() {
