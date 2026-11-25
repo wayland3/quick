@@ -145,6 +145,12 @@ fn apply_side_effects(
     {
         report.failed_hotkeys.push(next.clipboard_hotkey.clone());
     }
+    if changed.contains(&"convert_hotkey".to_string())
+        && previous.convert_hotkey != next.convert_hotkey
+        && !rebind_one(app, HotkeyAction::Convert, &next.convert_hotkey)?
+    {
+        report.failed_hotkeys.push(next.convert_hotkey.clone());
+    }
 
     // 开机自启：失败不阻断保存，但要把失败告诉前端（R-012）
     if changed.contains(&"autostart".to_string()) && previous.autostart != next.autostart {

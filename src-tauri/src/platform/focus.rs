@@ -28,6 +28,53 @@ pub struct MonitorInfo {
     pub scale_factor: f64,
 }
 
+impl MonitorInfo {
+    /// 转成工作区描述（用于位置计算）
+    pub fn work_area(&self) -> WorkArea {
+        WorkArea {
+            left: self.work_left,
+            top: self.work_top,
+            width: self.work_width,
+            height: self.work_height,
+            scale_factor: self.scale_factor,
+        }
+    }
+}
+
+/// 工作区（物理像素）与 DPI 缩放
+///
+/// 平台层拿到的原始数据都是物理像素；窗口尺寸与位置一律用逻辑像素。
+/// 把这组数据打包成结构体，让单位边界显式化，避免混算。
+#[derive(Debug, Clone, Copy)]
+pub struct WorkArea {
+    pub left: i32,
+    pub top: i32,
+    pub width: i32,
+    pub height: i32,
+    /// 物理像素 -> 逻辑像素的换算系数（96 DPI 时为 1.0）
+    pub scale_factor: f64,
+}
+
+impl WorkArea {
+    /// 工作区宽度（逻辑像素）
+    pub fn logical_width(&self) -> f64 {
+        self.width as f64 / self.scale_factor
+    }
+
+    /// 工作区高度（逻辑像素）
+    pub fn logical_height(&self) -> f64 {
+        self.height as f64 / self.scale_factor
+    }
+
+    /// 工作区左上角（逻辑像素）
+    pub fn logical_origin(&self) -> (f64, f64) {
+        (
+            self.left as f64 / self.scale_factor,
+            self.top as f64 / self.scale_factor,
+        )
+    }
+}
+
 /// 捕获当前前台窗口信息
 pub fn capture_foreground() -> Option<ForegroundWindow> {
     #[cfg(target_os = "windows")]
@@ -94,32 +141,80 @@ pub fn get_cursor_monitor() -> Result<MonitorInfo, AppError> {
     }
 }
 
+/// Monitor containing a physical screen point (used for an already placed overlay).
+pub fn get_monitor_at(x: i32, y: i32) -> Result<MonitorInfo, AppError> {
+    #[cfg(target_os = "windows")]
+    {
+        windows_impl::monitor_at_windows(x, y)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = (x, y);
+        get_cursor_monitor()
+    }
+}
+
+/// True only when the OS has confirmed that neither overlay window owns the foreground.
+pub fn foreground_is_outside(
+    overlay: &tauri::WebviewWindow,
+    detail: Option<&tauri::WebviewWindow>,
+) -> Option<bool> {
+    #[cfg(target_os = "windows")]
+    {
+        windows_impl::foreground_is_outside_windows(overlay, detail)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = (overlay, detail);
+        let foreground = linux_impl::capture_foreground_linux()?;
+        (foreground.pid != 0).then_some(foreground.pid != std::process::id())
+    }
+}
+
+/// 浮层垂直定位策略
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum VerticalAlign {
+    /// 距工作区顶部指定比例处
+    Offset(f64),
+    /// 紧贴工作区上沿
+    Top,
+    /// 垂直居中
+    Center,
+}
+
 /// 计算浮层位置（纯函数，跨平台通用）
+///
+/// 垂直定位策略：
+/// - `Offset(ratio)`：距工作区顶部 `ratio` 比例处（默认 0.2）
+/// - `Top`：紧贴工作区上沿
+/// - `Center`：垂直居中
+///
+/// 宽度不超过工作区宽度（留 32px 边距）；窄屏保底 320px。
 pub fn calculate_overlay_position(
-    work_left: i32,
-    work_top: i32,
-    work_width: i32,
-    work_height: i32,
-    scale_factor: f64,
+    work: WorkArea,
     window_width: u32,
     window_height: u32,
+    vertical: VerticalAlign,
 ) -> (i32, i32, u32, u32) {
-    // 工作区转逻辑像素
-    let logical_work_left = work_left as f64 / scale_factor;
-    let logical_work_top = work_top as f64 / scale_factor;
-    let logical_work_width = work_width as f64 / scale_factor;
-    let logical_work_height = work_height as f64 / scale_factor;
+    let (logical_left, logical_top) = work.logical_origin();
+    let logical_width = work.logical_width();
+    let logical_height = work.logical_height();
 
-    // 竖屏限制宽度
-    let effective_width = if logical_work_width < 800.0 {
-        (logical_work_width - 32.0).min(window_width as f64) as u32
-    } else {
-        window_width
+    // 宽度不超过工作区宽度（留 32px 边距）；竖屏窄屏同样受此约束
+    let max_width = (logical_width - 32.0).max(320.0) as u32;
+    let effective_width = window_width.min(max_width);
+
+    // 水平居中
+    let x = (logical_left + (logical_width - effective_width as f64) / 2.0) as i32;
+
+    // 垂直定位
+    let y = match vertical {
+        VerticalAlign::Offset(ratio) => (logical_top + logical_height * ratio) as i32,
+        VerticalAlign::Top => logical_top as i32,
+        VerticalAlign::Center => {
+            (logical_top + (logical_height - window_height as f64) / 2.0) as i32
+        }
     };
-
-    // 水平居中，垂直距顶 20%
-    let x = (logical_work_left + (logical_work_width - effective_width as f64) / 2.0) as i32;
-    let y = (logical_work_top + logical_work_height * 0.2) as i32;
 
     (x, y, effective_width, window_height)
 }
@@ -364,6 +459,28 @@ mod windows_impl {
         let mut pos = windows::Win32::Foundation::POINT { x: 0, y: 0 };
         unsafe { GetCursorPos(&mut pos) }?;
 
+        monitor_at_windows(pos.x, pos.y)
+    }
+
+    pub fn foreground_is_outside_windows(
+        overlay: &tauri::WebviewWindow,
+        detail: Option<&tauri::WebviewWindow>,
+    ) -> Option<bool> {
+        // SAFETY: GetForegroundWindow returns an HWND owned by the OS; an invalid
+        // handle means focus is in transit, so the caller must not hide the overlay.
+        let hwnd = unsafe { GetForegroundWindow() };
+        if hwnd.is_invalid() {
+            return None;
+        }
+        let overlay_hwnd = overlay.hwnd().ok()?;
+        let detail_hwnd = detail.and_then(|window| window.hwnd().ok());
+        Some(hwnd != overlay_hwnd && detail_hwnd != Some(hwnd))
+    }
+
+    pub fn monitor_at_windows(x: i32, y: i32) -> Result<MonitorInfo, AppError> {
+        let pos = windows::Win32::Foundation::POINT { x, y };
+        // SAFETY: POINT is initialized; MONITOR_DEFAULTTONEAREST also handles
+        // points just outside a monitor's work area.
         let monitor = unsafe { MonitorFromPoint(pos, MONITOR_DEFAULTTONEAREST) };
         let mut info = MONITORINFO {
             cbSize: std::mem::size_of::<MONITORINFO>() as u32,
@@ -720,9 +837,25 @@ mod linux_impl {
 mod tests {
     use super::*;
 
+    /// 构造 1.0 缩放的工作区
+    fn work(left: i32, top: i32, width: i32, height: i32) -> WorkArea {
+        WorkArea {
+            left,
+            top,
+            width,
+            height,
+            scale_factor: 1.0,
+        }
+    }
+
     #[test]
     fn 标准显示器居中计算() {
-        let (x, y, w, h) = calculate_overlay_position(0, 0, 1920, 1080, 1.0, 720, 400);
+        let (x, y, w, h) = calculate_overlay_position(
+            work(0, 0, 1920, 1080),
+            720,
+            400,
+            VerticalAlign::Offset(0.2),
+        );
         assert_eq!(x, 600);
         assert_eq!(y, 216);
         assert_eq!(w, 720);
@@ -732,10 +865,106 @@ mod tests {
     #[test]
     #[allow(non_snake_case)]
     fn 高DPI缩放计算() {
-        let (x, y, w, h) = calculate_overlay_position(0, 0, 2880, 1620, 1.5, 720, 400);
+        let area = WorkArea {
+            left: 0,
+            top: 0,
+            width: 2880,
+            height: 1620,
+            scale_factor: 1.5,
+        };
+        let (x, y, w, h) = calculate_overlay_position(area, 720, 400, VerticalAlign::Offset(0.2));
         assert_eq!(x, 600);
         assert_eq!(y, 216);
         assert_eq!(w, 720);
         assert_eq!(h, 400);
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn json详情加宽宽度在常规屏幕生效() {
+        let (x, _, w, _) =
+            calculate_overlay_position(work(0, 0, 1920, 1080), 1280, 800, VerticalAlign::Top);
+        assert_eq!(w, 1280);
+        assert_eq!(x, (1920 - 1280) / 2);
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn 宽度不超过工作区() {
+        // 工作区只有 1024 宽，1280 应被裁到 1024 - 32
+        let (_, _, w, _) =
+            calculate_overlay_position(work(0, 0, 1024, 768), 1280, 800, VerticalAlign::Top);
+        assert_eq!(w, 992);
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn 极窄工作区保底宽度() {
+        let (_, _, w, _) =
+            calculate_overlay_position(work(0, 0, 320, 600), 1280, 800, VerticalAlign::Top);
+        assert_eq!(w, 320);
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn 顶部对齐贴工作区上沿() {
+        // 有任务栏时 work_top 非 0，逻辑坐标应为 work_top / scale
+        let (_, y, _, _) =
+            calculate_overlay_position(work(0, 40, 1920, 1040), 1280, 800, VerticalAlign::Top);
+        assert_eq!(y, 40);
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn 垂直居中按逻辑像素计算() {
+        // 工作区 1080 高，窗口 400 高 -> y = (1080 - 400) / 2 = 340
+        let (_, y, _, _) =
+            calculate_overlay_position(work(0, 0, 1920, 1080), 720, 400, VerticalAlign::Center);
+        assert_eq!(y, 340);
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn 高DPI垂直居中用逻辑像素() {
+        // 物理 1620 / 1.5 = 1080 逻辑高，窗口 400 逻辑高 -> y = 340
+        let area = WorkArea {
+            left: 0,
+            top: 0,
+            width: 2880,
+            height: 1620,
+            scale_factor: 1.5,
+        };
+        let (_, y, _, _) = calculate_overlay_position(area, 720, 400, VerticalAlign::Center);
+        assert_eq!(y, 340);
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn 高DPI顶部对齐用逻辑像素() {
+        // 物理 top=60 / 1.5 = 40 逻辑像素
+        let area = WorkArea {
+            left: 0,
+            top: 60,
+            width: 2880,
+            height: 1560,
+            scale_factor: 1.5,
+        };
+        let (_, y, _, _) = calculate_overlay_position(area, 720, 400, VerticalAlign::Top);
+        assert_eq!(y, 40);
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn 工作区逻辑尺寸换算正确() {
+        let area = WorkArea {
+            left: 30,
+            top: 60,
+            width: 2880,
+            height: 1620,
+            scale_factor: 1.5,
+        };
+        assert_eq!(area.logical_width(), 1920.0);
+        assert_eq!(area.logical_height(), 1080.0);
+        assert_eq!(area.logical_origin(), (20.0, 40.0));
     }
 }

@@ -14,6 +14,14 @@ use tauri_plugin_autostart::ManagerExt;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // panic 兜底记录：默认 hook 只能打到 stderr，Windows 托盘程序看不到，
+    // 落到日志文件便于事后排查（AGENTS.md §2 #5「关键流程记录日志」）。
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        log::error!("panic: {}", info);
+        default_hook(info);
+    }));
+
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("overlay") {
@@ -51,6 +59,10 @@ pub fn run() {
             commands::overlay_show,
             commands::overlay_hide,
             commands::overlay_resize,
+            commands::json_detail_show,
+            commands::json_detail_hide,
+            commands::json_detail_move,
+            commands::json_detail_content,
             commands::hotkey_status,
             commands::hotkey_probe,
             commands::hotkey_rebind,
@@ -71,25 +83,57 @@ pub fn run() {
             commands::launcher::app_index_rebuild,
             commands::launcher::launcher_query,
             commands::launcher::launcher_execute,
+            commands::convert::convert_query,
+            commands::convert::convert_copy,
         ])
         .manage(OverlayManager::new())
+        .manage(services::jsondetail::DetailContent::default())
         .manage(HotkeyManager::new())
         .manage(services::paste::PasteOptions::new())
         .manage(services::appindex::IndexRebuildLock::default())
         .manage(commands::launcher::LaunchGuard::default())
         .on_window_event(|window, event| {
-            // 点击其他窗口（失焦）即隐藏浮层；Esc 由前端监听统一处理
-            if window.label() == "overlay" && matches!(event, tauri::WindowEvent::Focused(false)) {
-                log::info!("overlay lost focus, hiding");
-                let manager = window.state::<OverlayManager>();
-                if let Err(error) = manager.on_blur(window) {
-                    log::warn!("overlay blur hide failed: {}", error);
-                }
+            // 等焦点切换结束后再检查，详情窗口与浮层之间切换不算失焦。
+            if matches!(window.label(), "overlay" | "json-detail")
+                && matches!(event, tauri::WindowEvent::Focused(false))
+            {
+                let app = window.app_handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(80));
+                    let overlay = app.get_webview_window("overlay");
+                    let detail = app.get_webview_window("json-detail");
+                    let overlay_focused = overlay
+                        .as_ref()
+                        .and_then(|w| w.is_focused().ok())
+                        .unwrap_or(false);
+                    let detail_focused = detail
+                        .as_ref()
+                        .and_then(|w| w.is_focused().ok())
+                        .unwrap_or(false);
+                    if let Some(webview) = overlay {
+                        let external_foreground =
+                            platform::focus::foreground_is_outside(&webview, detail.as_ref())
+                                .unwrap_or(false);
+                        if services::window::should_hide_for_focus(
+                            overlay_focused,
+                            detail_focused,
+                            external_foreground,
+                        ) {
+                            let manager = app.state::<OverlayManager>();
+                            if let Err(error) = manager.on_blur(&webview) {
+                                log::warn!("overlay blur hide failed: {}", error);
+                            }
+                        }
+                    }
+                });
             }
         })
         .setup(|app| {
             log::info!("Quick starting");
             services::tray::setup_tray(app.handle())?;
+            if let Err(error) = services::jsondetail::ensure_detail_window(app.handle()) {
+                log::warn!("json detail window unavailable: {}", error);
+            }
 
             // 数据库路径必须最先就绪：启动注册热键/自启对账都要读 settings
             let db_path = match services::storage::DbPath::resolve() {
@@ -171,6 +215,17 @@ pub fn run() {
                 rebuild_lock,
             ));
 
+            // 翻译服务：懒加载词典，资源目录在 resources/dictionaries
+            let resource_dir = app
+                .path()
+                .resolve("resources/dictionaries", tauri::path::BaseDirectory::Resource)
+                .unwrap_or_else(|_| {
+                    // dev 模式回退到 CARGO_MANIFEST_DIR
+                    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                        .join("resources/dictionaries")
+                });
+            app.manage(services::translate::TranslateService::new(resource_dir));
+
             Ok(())
         })
         .run(tauri::generate_context!())
@@ -197,6 +252,11 @@ fn register_startup_hotkeys(
             HotkeyAction::Clipboard,
             settings.clipboard_hotkey.as_str(),
             "Alt+V",
+        ),
+        (
+            HotkeyAction::Convert,
+            settings.convert_hotkey.as_str(),
+            "Alt+Q",
         ),
     ];
 

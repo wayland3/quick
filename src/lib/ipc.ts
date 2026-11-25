@@ -3,6 +3,7 @@ import type {
   ClipFilter,
   ClipboardDetail,
   ClipboardListResult,
+  ConvertQueryResult,
   Settings,
 } from './clipboard';
 import type { AppIndexRebuildResult, LauncherQueryResult } from './launcher';
@@ -93,7 +94,7 @@ export const ipc = {
     return invokeWrapper<boolean>('autostart_is_enabled');
   },
 
-  async overlayShow(mode: 'launcher' | 'clipboard'): Promise<void> {
+  async overlayShow(mode: 'launcher' | 'clipboard' | 'convert'): Promise<void> {
     return invokeWrapper<void>('overlay_show', { payload: { mode } });
   },
 
@@ -101,8 +102,24 @@ export const ipc = {
     return invokeWrapper<void>('overlay_hide');
   },
 
-  async overlayResize(height: number): Promise<void> {
-    return invokeWrapper<void>('overlay_resize', { payload: { height } });
+  async overlayResize(height: number, align?: 'top' | 'center'): Promise<void> {
+    return invokeWrapper<void>('overlay_resize', { payload: { height, align } });
+  },
+
+  async jsonDetailShow(content: string): Promise<void> {
+    return invokeWrapper<void>('json_detail_show', { content });
+  },
+
+  async jsonDetailHide(): Promise<void> {
+    return invokeWrapper<void>('json_detail_hide');
+  },
+
+  async jsonDetailContent(): Promise<string | null> {
+    return invokeWrapper<string | null>('json_detail_content');
+  },
+
+  async jsonDetailMove(dx: number, dy: number): Promise<void> {
+    return invokeWrapper<void>('json_detail_move', { dx, dy });
   },
 
   async hotkeyStatus(): Promise<{
@@ -118,17 +135,17 @@ export const ipc = {
   },
 
   async hotkeyRebind(
-    action: 'launcher' | 'clipboard',
+    action: 'launcher' | 'clipboard' | 'convert',
     accelerator: string,
   ): Promise<boolean> {
     return invokeWrapper<boolean>('hotkey_rebind', { action, accelerator });
   },
 
-  async hotkeySuspend(action: 'launcher' | 'clipboard'): Promise<void> {
+  async hotkeySuspend(action: 'launcher' | 'clipboard' | 'convert'): Promise<void> {
     return invokeWrapper<void>('hotkey_suspend', { action });
   },
 
-  async hotkeyResume(action: 'launcher' | 'clipboard'): Promise<void> {
+  async hotkeyResume(action: 'launcher' | 'clipboard' | 'convert'): Promise<void> {
     return invokeWrapper<void>('hotkey_resume', { action });
   },
 
@@ -140,8 +157,8 @@ export const ipc = {
     return invokeWrapper<LauncherQueryResult>('launcher_query', { query, limit });
   },
 
-  async launcherExecute(key: string): Promise<void> {
-    return invokeWrapper<void>('launcher_execute', { key });
+  async launcherExecute(key: string, keepOpen?: boolean): Promise<void> {
+    return invokeWrapper<void>('launcher_execute', { key, keepOpen });
   },
 
   async clipboardList(params: {
@@ -195,5 +212,13 @@ export const ipc = {
 
   async appDataDirOpen(): Promise<void> {
     return invokeWrapper<void>('app_data_dir_open');
+  },
+
+  async convertQuery(input: string): Promise<ConvertQueryResult> {
+    return invokeWrapper<ConvertQueryResult>('convert_query', { input });
+  },
+
+  async convertCopy(value: string): Promise<void> {
+    return invokeWrapper<void>('convert_copy', { value });
   },
 };

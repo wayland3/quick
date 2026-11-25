@@ -6,13 +6,14 @@ use global_hotkey::GlobalHotKeyManager;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum HotkeyAction {
     Launcher,
     Clipboard,
+    Convert,
 }
 
 impl HotkeyAction {
@@ -20,6 +21,7 @@ impl HotkeyAction {
         match self {
             HotkeyAction::Launcher => "launcher",
             HotkeyAction::Clipboard => "clipboard",
+            HotkeyAction::Convert => "convert",
         }
     }
 }
@@ -118,7 +120,57 @@ impl HotkeyManager {
                         .map(|s| s.contains(&action_clone))
                         .unwrap_or(false);
                     if !is_suspended {
-                        let _ = app_clone.emit("hotkey://pressed", action_clone.as_str());
+                        // 浮层已显示同模式时直接切换隐藏，跳过划词读取。
+                        // 否则焦点在浮层上，UIA 读不到选区会等 500ms 超时，
+                        // 用户感知到明显的关闭延迟。
+                        let should_toggle = {
+                            let overlay =
+                                app_clone.state::<crate::services::window::OverlayManager>();
+                            let state = overlay.get_state();
+                            let mode = overlay.get_mode();
+                            state == crate::services::window::OverlayState::Shown
+                                && match action_clone {
+                                    HotkeyAction::Convert => {
+                                        mode == Some(crate::services::window::OverlayMode::Convert)
+                                    }
+                                    HotkeyAction::Launcher => {
+                                        mode == Some(crate::services::window::OverlayMode::Launcher)
+                                    }
+                                    _ => false,
+                                }
+                        };
+
+                        if should_toggle {
+                            // 同模式已显示：发通用事件，前端调 overlay_show 触发 toggle
+                            let _ = app_clone.emit("hotkey://pressed", action_clone.as_str());
+                        } else {
+                            // 划词读取：转换与翻译（启动器）共用同一入口。
+                            // 必须在浮层显示前调用，保证目标窗口仍在前台。
+                            match action_clone {
+                                HotkeyAction::Convert => {
+                                    let selected =
+                                        crate::services::selection::capture_selected_text()
+                                            .unwrap_or_default();
+                                    let _ = app_clone.emit("convert://open", selected);
+                                }
+                                HotkeyAction::Launcher => {
+                                    match crate::services::selection::capture_selected_text() {
+                                        Some(text) => {
+                                            let _ = app_clone.emit("launcher://open", text);
+                                        }
+                                        // 读不到选区时保留上次查询词
+                                        None => {
+                                            let _ = app_clone
+                                                .emit("hotkey://pressed", action_clone.as_str());
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    let _ =
+                                        app_clone.emit("hotkey://pressed", action_clone.as_str());
+                                }
+                            }
+                        }
                     }
                 }
             }

@@ -37,6 +37,10 @@ pub enum LauncherKind {
     File,
     #[serde(rename = "command")]
     Command,
+    #[serde(rename = "translate")]
+    Translate,
+    #[serde(rename = "search")]
+    Search,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,6 +114,62 @@ pub struct Settings {
     /// 粘贴后还原原剪贴板（T-205 开关，默认关）
     #[serde(default)]
     pub restore_clipboard_after_paste: bool,
+    /// 快速转换热键
+    #[serde(default = "default_convert_hotkey")]
+    pub convert_hotkey: String,
+    /// 时间转换器开关
+    #[serde(default = "default_true")]
+    pub convert_time_enabled: bool,
+    /// MD5 转换器开关
+    #[serde(default = "default_true")]
+    pub convert_md5_enabled: bool,
+    /// JSON 格式化开关
+    #[serde(default = "default_true")]
+    pub convert_json_enabled: bool,
+    /// 时区列表（UTC 偏移，如 "+8"、"+5:30"）
+    /// 顺序 = 输出顺序
+    #[serde(default = "default_convert_timezones")]
+    pub convert_timezones: Vec<String>,
+    /// 翻译与搜索兜底开关（默认开启）
+    #[serde(default = "default_true")]
+    pub translate_enabled: bool,
+    /// 搜索兜底开关（默认开启）
+    #[serde(default = "default_true")]
+    pub search_enabled: bool,
+    /// 应用搜索条数（3–10，默认 5）
+    #[serde(default = "default_launcher_app_limit")]
+    pub launcher_app_limit: u32,
+    /// 搜索引擎列表（最多 3 条）
+    #[serde(default = "default_search_engines")]
+    pub search_engines: Vec<SearchEngine>,
+}
+
+/// 搜索引擎配置
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SearchEngine {
+    /// 显示名称
+    pub name: String,
+    /// URL 模板，含 {query} 占位符
+    pub url_template: String,
+}
+
+/// 应用搜索条数默认值
+fn default_launcher_app_limit() -> u32 {
+    5
+}
+
+/// 默认搜索引擎列表
+fn default_search_engines() -> Vec<SearchEngine> {
+    vec![
+        SearchEngine {
+            name: "Google".to_string(),
+            url_template: "https://www.google.com/search?q={query}".to_string(),
+        },
+        SearchEngine {
+            name: "百度".to_string(),
+            url_template: "https://www.baidu.com/s?wd={query}".to_string(),
+        },
+    ]
 }
 
 /// 启动器热键默认值
@@ -144,6 +204,14 @@ fn default_theme() -> String {
 fn default_excluded_apps() -> Vec<String> {
     Vec::new()
 }
+/// 转换热键默认值
+fn default_convert_hotkey() -> String {
+    "Alt+Q".to_string()
+}
+/// 默认时区列表
+fn default_convert_timezones() -> Vec<String> {
+    vec!["+8".to_string(), "0".to_string()] // UTC +8, UTC +0
+}
 
 impl Default for Settings {
     fn default() -> Self {
@@ -161,6 +229,15 @@ impl Default for Settings {
             autostart: false,
             pause_recording: false,
             restore_clipboard_after_paste: false,
+            convert_hotkey: default_convert_hotkey(),
+            convert_time_enabled: true,
+            convert_md5_enabled: true,
+            convert_json_enabled: true,
+            convert_timezones: default_convert_timezones(),
+            translate_enabled: true,
+            search_enabled: true,
+            launcher_app_limit: default_launcher_app_limit(),
+            search_engines: default_search_engines(),
         }
     }
 }
@@ -180,14 +257,18 @@ impl Settings {
         let hotkeys = [
             ("启动器热键", &self.launcher_hotkey),
             ("剪贴板热键", &self.clipboard_hotkey),
+            ("转换热键", &self.convert_hotkey),
         ];
         for (name, accelerator) in hotkeys {
             validate_hotkey(accelerator).map_err(|reason| format!("{}：{}", name, reason))?;
         }
 
-        // 两个热键不能相同，否则必然注册冲突
-        if self.launcher_hotkey == self.clipboard_hotkey {
-            return Err("两个全局热键不能重复".to_string());
+        // 三个热键不能相同，否则必然注册冲突
+        if self.launcher_hotkey == self.clipboard_hotkey
+            || self.launcher_hotkey == self.convert_hotkey
+            || self.clipboard_hotkey == self.convert_hotkey
+        {
+            return Err("三个全局热键不能重复".to_string());
         }
 
         if !Self::VALID_RETENTION_DAYS.contains(&self.retention_days) {
@@ -224,7 +305,80 @@ impl Settings {
             }
         }
 
+        // 校验时区格式
+        for tz in &self.convert_timezones {
+            parse_offset_seconds(tz).map_err(|e| format!("时区 {} 格式错误：{}", tz, e))?;
+        }
+
+        if self.convert_timezones.is_empty() {
+            return Err("时区列表不能为空".to_string());
+        }
+
+        // 校验应用搜索条数
+        if !(3..=10).contains(&self.launcher_app_limit) {
+            return Err("应用搜索条数需在 3 到 10 之间".to_string());
+        }
+
+        // 校验搜索引擎列表
+        if self.search_engines.len() > 3 {
+            return Err("搜索引擎最多 3 条".to_string());
+        }
+        for engine in &self.search_engines {
+            if engine.name.trim().is_empty() {
+                return Err("搜索引擎名称不能为空".to_string());
+            }
+            if engine.name.len() > 20 {
+                return Err("搜索引擎名称过长".to_string());
+            }
+            if !engine.url_template.contains("{query}") {
+                return Err("搜索引擎 URL 模板必须含 {query} 占位符".to_string());
+            }
+            if !engine.url_template.starts_with("https://") {
+                return Err("搜索引擎 URL 必须以 https:// 开头".to_string());
+            }
+        }
+
         Ok(())
+    }
+}
+
+/// 解析时区偏移（如 "+8" → 8小时, "+5:30" → 5小时30分钟）
+///
+/// 返回秒数，支持负数
+pub fn parse_offset_seconds(tz: &str) -> Result<i32, String> {
+    let trimmed = tz.trim();
+    if trimmed.is_empty() {
+        return Err("时区不能为空".to_string());
+    }
+
+    // 解析符号
+    let (sign, rest) = if let Some(stripped) = trimmed.strip_prefix('+') {
+        (1, stripped)
+    } else if let Some(stripped) = trimmed.strip_prefix('-') {
+        (-1, stripped)
+    } else {
+        (1, trimmed)
+    };
+
+    // 解析小时:分钟
+    if let Some((h, m)) = rest.split_once(':') {
+        let hours: i32 = h.parse().map_err(|_| "小时格式错误".to_string())?;
+        let minutes: i32 = m.parse().map_err(|_| "分钟格式错误".to_string())?;
+
+        // 校验范围
+        if hours > 14 || minutes >= 60 {
+            return Err("时区偏移超出范围".to_string());
+        }
+
+        Ok(sign * (hours * 3600 + minutes * 60))
+    } else {
+        let hours: i32 = rest.parse().map_err(|_| "小时格式错误".to_string())?;
+
+        if hours > 14 {
+            return Err("时区偏移超出范围".to_string());
+        }
+
+        Ok(sign * hours * 3600)
     }
 }
 
@@ -318,6 +472,31 @@ pub struct ClipboardDetail {
     pub copy_count: i64,
     pub pinned: bool,
     pub truncated: bool,
+}
+
+/// 转换结果项
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConvertItem {
+    /// 标签（如 "UTC +8"、"MD5"、"JSON"）
+    pub label: String,
+    /// 值（截断显示，复制完整值）
+    pub value: String,
+    /// 组类型（用于排序）
+    pub group: ConvertGroup,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConvertGroup {
+    Time,
+    Md5,
+    Json,
+}
+
+/// convert_query 返回
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConvertQueryResult {
+    pub items: Vec<ConvertItem>,
 }
 
 #[cfg(test)]

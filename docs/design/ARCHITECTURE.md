@@ -63,5 +63,6 @@
 | 启动器 | `docs/design/features/launcher.md` | 查询与排序、内置命令分派、执行、索引刷新 |
 | 剪贴板 | `docs/design/features/clipboard.md` | 监听、入库去重、粘贴抑制与节流、粘贴流程、容量治理 |
 | 设置 | `docs/design/features/settings.md` | JSON 单条存储、patch 合并与校验、副作用、启动同步 |
+| 快速转换 | `docs/design/features/convert.md`（待写） | 划词读取、时间/MD5/JSON 转换、结果列表、时区列表设置 |
 
 跨功能内容留在本文：进程/线程模型（§2）、窗口属性（§3）、错误模型（§4）、数据库（`DATABASE.md`）、IPC（`IPC.md`）。检索打分与应用索引算法归启动器，见 `docs/design/features/launcher.md`。

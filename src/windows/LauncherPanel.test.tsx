@@ -72,7 +72,7 @@ describe('启动器面板', () => {
     fireEvent.keyDown(screen.getByLabelText('搜索应用'), { key: 'Enter' });
 
     await waitFor(() =>
-      expect(ipc.launcherExecute).toHaveBeenCalledWith('chrome.exe'),
+      expect(ipc.launcherExecute).toHaveBeenCalledWith('chrome.exe', false),
     );
   });
 
@@ -97,7 +97,7 @@ describe('启动器面板', () => {
     fireEvent.keyDown(screen.getByLabelText('搜索应用'), { key: 'Enter' });
 
     await waitFor(() =>
-      expect(ipc.launcherExecute).toHaveBeenCalledWith('cmd:锁屏'),
+      expect(ipc.launcherExecute).toHaveBeenCalledWith('cmd:锁屏', false),
     );
   });
 
@@ -142,6 +142,41 @@ describe('启动器面板', () => {
     expect(icons[1]?.textContent).toBe('⌘');
   });
 
+  it('搜索品牌图标固定尺寸，翻译和自定义引擎使用图标列徽章', async () => {
+    mockResult({
+      items: [
+        {
+          key: 'search:0:query', title: 'Google', subtitle: null,
+          kind: 'search', icon: null, score: 0,
+        },
+        {
+          key: 'search:1:query', title: '百度', subtitle: null,
+          kind: 'search', icon: null, score: 0,
+        },
+        {
+          key: 'translate:query', title: '释义', subtitle: null,
+          kind: 'translate', icon: null, score: 0,
+        },
+        {
+          key: 'search:2:query', title: 'DuckDuckGo', subtitle: null,
+          kind: 'search', icon: null, score: 0,
+        },
+      ],
+      hint: null,
+    });
+    const { container } = render(<LauncherPanel />);
+
+    await waitFor(() => expect(screen.getByText('百度')).toBeTruthy());
+    const brandIcons = container.querySelectorAll('svg.qw-row-brand');
+    expect(brandIcons).toHaveLength(2);
+    for (const icon of brandIcons) {
+      expect(icon.getAttribute('width')).toBe('24');
+      expect(icon.getAttribute('height')).toBe('24');
+    }
+    const badges = container.querySelectorAll('.qw-row-icon-badge');
+    expect([...badges].map((badge) => badge.textContent)).toEqual(['译', 'D']);
+  });
+
   it('打开失败时底部显示错误且面板保留', async () => {
     vi.mocked(ipc.launcherExecute).mockRejectedValue(
       new Error('无法打开该应用，请确认它仍然安装'),
@@ -155,6 +190,23 @@ describe('启动器面板', () => {
       expect(screen.getByText('无法打开该应用，请确认它仍然安装')).toBeTruthy(),
     );
     expect(screen.getByLabelText('搜索应用')).toBeTruthy();
+  });
+
+  it('接收到划词预填时替换查询词并消费', async () => {
+    const onPrefillConsumed = vi.fn();
+    const { rerender } = render(
+      <LauncherPanel prefill="" onPrefillConsumed={onPrefillConsumed} />,
+    );
+
+    await waitFor(() => expect(ipc.launcherQuery).toHaveBeenCalled());
+    rerender(<LauncherPanel prefill="machine learning" onPrefillConsumed={onPrefillConsumed} />);
+
+    const input = screen.getByLabelText('搜索应用') as HTMLInputElement;
+    expect(input.value).toBe('machine learning');
+    expect(onPrefillConsumed).toHaveBeenCalledTimes(1);
+    await waitFor(() =>
+      expect(ipc.launcherQuery).toHaveBeenLastCalledWith('machine learning', 12),
+    );
   });
 
   it('执行中重复按 Enter 只触发一次打开', async () => {

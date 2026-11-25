@@ -101,6 +101,18 @@ describe('IPC 契约', () => {
         autostart: false,
         pause_recording: false,
         restore_clipboard_after_paste: false,
+        convert_hotkey: 'Alt+Q',
+        convert_time_enabled: true,
+        convert_md5_enabled: true,
+        convert_json_enabled: true,
+        convert_timezones: ['+8', '0'],
+        translate_enabled: true,
+        search_enabled: true,
+        launcher_app_limit: 5,
+        search_engines: [
+          { name: 'Google', url_template: 'https://www.google.com/search?q={query}' },
+          { name: '百度', url_template: 'https://www.baidu.com/s?wd={query}' },
+        ],
       };
 
       const keys = Object.keys(settings).sort();

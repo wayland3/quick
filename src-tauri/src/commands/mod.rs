@@ -1,14 +1,15 @@
 pub mod clipboard;
+pub mod convert;
 pub mod launcher;
 pub mod settings;
 
 use crate::error::AppError;
 use crate::services::hotkey::{HotkeyAction, HotkeyManager, HotkeyProbeResult, HotkeyStatus};
 use crate::services::window::{
-    HideReason, OverlayManager, OverlayMode, ResizePayload, ShowPayload,
+    HideReason, OverlayAlign, OverlayManager, OverlayMode, ResizePayload, ShowPayload,
 };
 use std::path::PathBuf;
-use tauri::{Manager, Window};
+use tauri::{Manager, WebviewWindow, Window};
 use tauri_plugin_autostart::ManagerExt;
 
 #[tauri::command]
@@ -44,25 +45,93 @@ pub async fn autostart_is_enabled<R: tauri::Runtime>(
         .map_err(|e| AppError::Internal(format!("failed to check autostart: {}", e)))
 }
 
+/// 获取 overlay 窗口（显式查找，不依赖调用窗口）
+///
+/// 浮层相关命令必须操作 `overlay` 窗口，不能依赖 `window: Window` 参数
+/// （Tauri 自动注入调用方窗口）。设置窗口若误调用这些命令，会导致
+/// 设置窗口被当作浮层显示。
+fn get_overlay_window<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<WebviewWindow<R>, AppError> {
+    app.get_webview_window("overlay")
+        .ok_or_else(|| AppError::Internal("overlay window not found".into()))
+}
+
 #[tauri::command]
-pub async fn overlay_show(window: Window, payload: ShowPayload) -> Result<(), AppError> {
+pub async fn overlay_show(app: tauri::AppHandle, payload: ShowPayload) -> Result<(), AppError> {
     let mode = OverlayMode::from_str(&payload.mode)
         .ok_or_else(|| AppError::Internal(format!("invalid mode: {}", payload.mode)))?;
 
-    let overlay_manager = window.state::<OverlayManager>();
-    overlay_manager.show(&window, mode)
+    let webview = get_overlay_window(&app)?;
+    let overlay_manager = app.state::<OverlayManager>();
+    overlay_manager.show(&webview, mode)
 }
 
 #[tauri::command]
-pub async fn overlay_hide(window: Window) -> Result<(), AppError> {
-    let overlay_manager = window.state::<OverlayManager>();
-    overlay_manager.hide(&window, HideReason::UserCommand)
+pub async fn overlay_hide(app: tauri::AppHandle) -> Result<(), AppError> {
+    let webview = get_overlay_window(&app)?;
+    let overlay_manager = app.state::<OverlayManager>();
+    overlay_manager.hide(&webview, HideReason::UserCommand)
 }
 
 #[tauri::command]
-pub async fn overlay_resize(window: Window, payload: ResizePayload) -> Result<(), AppError> {
-    let overlay_manager = window.state::<OverlayManager>();
-    overlay_manager.resize(&window, payload.height)
+pub async fn overlay_resize(app: tauri::AppHandle, payload: ResizePayload) -> Result<(), AppError> {
+    let webview = get_overlay_window(&app)?;
+    let overlay_manager = app.state::<OverlayManager>();
+    let align = payload
+        .align
+        .as_deref()
+        .map(OverlayAlign::from_str)
+        .unwrap_or_default();
+    overlay_manager.resize(&webview, payload.height, align)
+}
+
+/// 展示 JSON 详情独立窗口
+#[tauri::command]
+pub async fn json_detail_show(app: tauri::AppHandle, content: String) -> Result<(), AppError> {
+    let webview = get_overlay_window(&app)?;
+    if !webview.is_visible()? {
+        return Ok(());
+    }
+    let position = webview.outer_position()?;
+    let size = webview.inner_size()?;
+    let scale = webview.scale_factor().unwrap_or(1.0);
+
+    crate::services::jsondetail::show_detail_window(
+        &app,
+        &content,
+        position.x,
+        position.y,
+        (size.width as f64 / scale) as u32,
+        (size.height as f64 / scale) as u32,
+    )?;
+    // Showing the second window can activate it. Keep arrow-key navigation in the main panel.
+    if let Err(error) = webview.set_focus() {
+        log::warn!(
+            "restore overlay focus after json detail show failed: {}",
+            error
+        );
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn json_detail_content(app: tauri::AppHandle) -> Option<String> {
+    app.try_state::<crate::services::jsondetail::DetailContent>()
+        .and_then(|content| content.0.lock().ok().and_then(|value| value.clone()))
+}
+
+/// 隐藏 JSON 详情独立窗口
+#[tauri::command]
+pub async fn json_detail_hide(app: tauri::AppHandle) -> Result<(), AppError> {
+    crate::services::jsondetail::hide_detail_window(&app);
+    Ok(())
+}
+
+/// 拖拽 JSON 详情窗口
+#[tauri::command]
+pub async fn json_detail_move(app: tauri::AppHandle, dx: i32, dy: i32) -> Result<(), AppError> {
+    crate::services::jsondetail::move_detail_window(&app, dx, dy)
 }
 
 #[tauri::command]
@@ -97,6 +166,7 @@ pub async fn hotkey_rebind(
     let action_enum = match action.as_str() {
         "launcher" => HotkeyAction::Launcher,
         "clipboard" => HotkeyAction::Clipboard,
+        "convert" => HotkeyAction::Convert,
         _ => return Err(AppError::Internal(format!("invalid action: {}", action))),
     };
 
@@ -145,6 +215,7 @@ fn persist_hotkey_setting(
         match action {
             "launcher" => next.launcher_hotkey = accelerator.to_string(),
             "clipboard" => next.clipboard_hotkey = accelerator.to_string(),
+            "convert" => next.convert_hotkey = accelerator.to_string(),
             _ => {}
         }
         Ok(next)
@@ -158,6 +229,7 @@ pub async fn hotkey_suspend(app: tauri::AppHandle, action: String) -> Result<(),
     let action_enum = match action.as_str() {
         "launcher" => HotkeyAction::Launcher,
         "clipboard" => HotkeyAction::Clipboard,
+        "convert" => HotkeyAction::Convert,
         _ => return Err(AppError::Internal(format!("invalid action: {}", action))),
     };
     hotkey_manager.suspend(action_enum)
@@ -169,6 +241,7 @@ pub async fn hotkey_resume(app: tauri::AppHandle, action: String) -> Result<(), 
     let action_enum = match action.as_str() {
         "launcher" => HotkeyAction::Launcher,
         "clipboard" => HotkeyAction::Clipboard,
+        "convert" => HotkeyAction::Convert,
         _ => return Err(AppError::Internal(format!("invalid action: {}", action))),
     };
     hotkey_manager.resume(action_enum)

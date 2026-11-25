@@ -55,6 +55,14 @@
 - [ ] 输入 `> rebuild` 重建应用索引
 - [ ] 输入 `> quit` 退出应用
 
+#### 划词预填（启动器 / 转换共用）
+
+- [ ] Chrome / Edge 网页选中文字，按 `Alt+Space` / `Alt+Q` 预填输入框
+- [ ] VS Code 设置 `editor.accessibilitySupport: "on"` 后选中文字，按热键预填
+- [ ] Windows Terminal 终端自己选中文字（普通拖拽或 `Ctrl+Shift+M` 标记模式），按热键预填
+- [ ] 终端内运行 opencode 时，按住 `Shift` 选择文字后再按热键，能预填
+- [ ] WinUI 记事本等不支持 UIA 的应用：读不到时按未选中降级，浮层仍正常打开、不报错
+
 ### 5. 剪贴板历史 - 基础功能
 
 - [ ] 复制文本，`Alt+V` 能看到新条目

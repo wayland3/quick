@@ -45,6 +45,21 @@ export interface ClipboardListResult {
   total: number;
 }
 
+/** 转换结果组类型 */
+export type ConvertGroup = 'time' | 'md5' | 'json';
+
+/** 转换结果项 */
+export interface ConvertItem {
+  label: string;
+  value: string;
+  group: ConvertGroup;
+}
+
+/** convert_query 返回 */
+export interface ConvertQueryResult {
+  items: ConvertItem[];
+}
+
 /** 与 Rust `models::Settings` 一一对应 */
 export interface Settings {
   launcher_hotkey: string;
@@ -60,6 +75,21 @@ export interface Settings {
   autostart: boolean;
   pause_recording: boolean;
   restore_clipboard_after_paste: boolean;
+  convert_hotkey: string;
+  convert_time_enabled: boolean;
+  convert_md5_enabled: boolean;
+  convert_json_enabled: boolean;
+  convert_timezones: string[];
+  translate_enabled: boolean;
+  search_enabled: boolean;
+  launcher_app_limit: number;
+  search_engines: SearchEngine[];
+}
+
+/** 搜索引擎配置 */
+export interface SearchEngine {
+  name: string;
+  url_template: string;
 }
 
 export interface SettingsChangedPayload {

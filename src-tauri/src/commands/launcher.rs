@@ -53,6 +53,31 @@ pub async fn launcher_query(
         .map(|state| state.as_path().to_path_buf())
         .ok_or_else(|| AppError::Storage("数据库尚未就绪".to_string()))?;
 
+    // 读取设置
+    let settings = {
+        let storage = ClipboardStorage::open_readonly_at(&db_path)?;
+        storage.load_settings()
+    };
+    let translate_enable = settings.translate_enabled;
+    let search_enable = settings.search_enabled;
+    let app_limit = settings.launcher_app_limit as usize;
+    let search_engines = settings.search_engines.clone();
+
+    // 获取翻译服务引用（在 spawn_blocking 外）
+    // 先在闭包外完成翻译查询，避免生命周期问题
+    let local_translation = if translate_enable && !query.trim().is_empty() {
+        let translate_service = app.try_state::<crate::services::translate::TranslateService>();
+        translate_service.and_then(|service| {
+            service.translate(&query).map(|t| {
+                t.phonetic
+                    .map(|p| format!("[{}] {}", p, t.definitions))
+                    .unwrap_or(t.definitions)
+            })
+        })
+    } else {
+        None
+    };
+
     let result = tauri::async_runtime::spawn_blocking(move || {
         let storage = ClipboardStorage::open_readonly_at(&db_path)?;
         let rows = storage.load_app_index()?;
@@ -62,7 +87,20 @@ pub async fn launcher_query(
             .map(|stat| (stat.key.clone(), stat))
             .collect();
 
-        let mut items = ranking::rank_apps(&query, &rows, &usage, now_ms(), limit);
+        // 计算各部分配额：应用+翻译+搜索 ≤ 10
+        let total_limit: usize = 10;
+        let translate_cost = if translate_enable { 1 } else { 0 };
+        let search_cost = if search_enable {
+            search_engines.len()
+        } else {
+            0
+        };
+        let apps_cap = total_limit
+            .saturating_sub(translate_cost + search_cost)
+            .max(3);
+        let apps_limit = app_limit.min(apps_cap).min(limit);
+
+        let mut items = ranking::rank_apps(&query, &rows, &usage, now_ms(), apps_limit);
         // icon 存的是缓存相对路径，前端 convertFileSrc 需要绝对路径
         if let Some(data_dir) = db_path.parent() {
             for item in items.iter_mut() {
@@ -71,6 +109,40 @@ pub async fn launcher_query(
                 }
             }
         }
+
+        // 追加翻译和搜索兜底（仅在查询非空时）
+        if !query.trim().is_empty() {
+            use crate::models::{LauncherItem, LauncherKind};
+
+            // 本地翻译（translate_enable 控制）
+            if translate_enable {
+                if let Some(definitions) = &local_translation {
+                    items.push(LauncherItem {
+                        key: format!("translate:{}", query.trim()),
+                        title: definitions.clone(),
+                        subtitle: Some("本地词典".to_string()),
+                        kind: LauncherKind::Translate,
+                        icon: None,
+                        score: 0.0,
+                    });
+                }
+            }
+
+            // 搜索引擎（search_enable 控制）
+            if search_enable {
+                for (index, engine) in search_engines.iter().enumerate() {
+                    items.push(LauncherItem {
+                        key: format!("search:{}:{}", index, query.trim()),
+                        title: engine.name.clone(),
+                        subtitle: Some(format!("在 {} 中搜索", engine.name)),
+                        kind: LauncherKind::Search,
+                        icon: None,
+                        score: 0.0,
+                    });
+                }
+            }
+        }
+
         Ok::<_, AppError>(LauncherQueryResult { items, hint: None })
     })
     .await
@@ -152,26 +224,119 @@ pub async fn launcher_execute(
     app: tauri::AppHandle,
     window: tauri::Window,
     key: String,
+    keep_open: Option<bool>,
 ) -> Result<(), AppError> {
+    let keep_open = keep_open.unwrap_or(false);
+
+    // 处理翻译行（复制释义到剪贴板）
+    if key.starts_with("translate:") {
+        return execute_translate(&app, &key, keep_open).await;
+    }
+
+    // 处理搜索行（打开浏览器）
+    if key.starts_with("search:") {
+        return execute_search(&app, &key).await;
+    }
+
     let guard = app.state::<LaunchGuard>();
     if !guard.try_begin(&key) {
         log::debug!("launcher execute deduped (already launching): key={}", key);
         return Ok(());
     }
-    let result = execute_launch(app.clone(), window, key.clone()).await;
+    let result = execute_launch(app.clone(), window, key.clone(), keep_open).await;
     guard.finish(&key);
     result
+}
+
+/// 执行翻译：复制释义到剪贴板
+async fn execute_translate(
+    app: &tauri::AppHandle,
+    key: &str,
+    keep_open: bool,
+) -> Result<(), AppError> {
+    let query = key.trim_start_matches("translate:");
+
+    // 重新查询词典获取完整释义
+    if let Some(translate_service) = app.try_state::<crate::services::translate::TranslateService>()
+    {
+        if let Some(translation) = translate_service.translate(query) {
+            let definitions = translation
+                .phonetic
+                .map(|p| format!("[{}] {}", p, translation.definitions))
+                .unwrap_or(translation.definitions);
+
+            // 写入剪贴板
+            crate::platform::clipboard::write_clipboard_content(
+                &crate::platform::clipboard::ClipboardContent::Text(definitions),
+            )?;
+
+            log::info!("translate copied to clipboard: {}", query);
+        }
+    }
+
+    // 根据 keep_open 决定是否隐藏浮层
+    if !keep_open {
+        if let Some(window) = app.get_webview_window("overlay") {
+            let _ = window.hide();
+        }
+    }
+
+    Ok(())
+}
+
+/// 执行搜索：打开浏览器
+async fn execute_search(app: &tauri::AppHandle, key: &str) -> Result<(), AppError> {
+    // 解析 key：search:{index}:{query}
+    let parts: Vec<&str> = key.splitn(3, ':').collect();
+    if parts.len() != 3 {
+        return Err(AppError::LaunchFailed("搜索 key 格式错误".to_string()));
+    }
+
+    let index: usize = parts[1]
+        .parse()
+        .map_err(|_| AppError::LaunchFailed("搜索引擎索引格式错误".to_string()))?;
+    let query = parts[2];
+
+    // 从设置中读取搜索引擎列表
+    let db_path = app
+        .try_state::<DbPath>()
+        .map(|state| state.as_path().to_path_buf())
+        .ok_or_else(|| AppError::Storage("数据库尚未就绪".to_string()))?;
+
+    let settings = {
+        let storage = ClipboardStorage::open_readonly_at(&db_path)?;
+        storage.load_settings()
+    };
+
+    let engine = settings
+        .search_engines
+        .get(index)
+        .ok_or_else(|| AppError::LaunchFailed("搜索引擎不存在".to_string()))?;
+
+    // 构造 URL
+    let encoded = urlencoding::encode(query.trim());
+    let url = engine.url_template.replace("{query}", &encoded);
+
+    // 打开浏览器
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_url(&url, None::<&str>)
+        .map_err(|e| AppError::Internal(format!("打开浏览器失败：{}", e)))?;
+
+    log::info!("search opened in browser: {}", url);
+    Ok(())
 }
 
 /// 启动编排主体（launcher_execute 的去重包装内调用）
 async fn execute_launch(
     app: tauri::AppHandle,
-    window: tauri::Window,
+    _window: tauri::Window,
     key: String,
+    keep_open: bool,
 ) -> Result<(), AppError> {
     // 检查是否是内置命令（key 以 "cmd:" 开头）
     if key.starts_with("cmd:") {
-        return execute_builtin_command(&app, &key).await;
+        return execute_builtin_command(&app, &key, keep_open).await;
     }
 
     let db_path = app
@@ -208,10 +373,15 @@ async fn execute_launch(
     .await
     .map_err(|error| AppError::Internal(format!("launcher launch join failed: {}", error)))??;
 
-    if let Some(manager) = app.try_state::<OverlayManager>() {
-        // 应用已经起来了，隐藏失败只影响观感，不应报成「打开失败」
-        if let Err(error) = manager.hide(&window, HideReason::Launch) {
-            log::warn!("hide overlay after launch failed: {}", error);
+    // 根据 keep_open 决定是否隐藏浮层
+    if !keep_open {
+        if let Some(manager) = app.try_state::<OverlayManager>() {
+            if let Some(webview) = app.get_webview_window("overlay") {
+                // 应用已经起来了，隐藏失败只影响观感，不应报成「打开失败」
+                if let Err(error) = manager.hide(&webview, HideReason::Launch) {
+                    log::warn!("hide overlay after launch failed: {}", error);
+                }
+            }
         }
     }
 
@@ -239,7 +409,11 @@ async fn execute_launch(
 }
 
 /// 执行内置命令
-async fn execute_builtin_command(app: &tauri::AppHandle, key: &str) -> Result<(), AppError> {
+async fn execute_builtin_command(
+    app: &tauri::AppHandle,
+    key: &str,
+    keep_open: bool,
+) -> Result<(), AppError> {
     let cmd_name = key.trim_start_matches("cmd:");
     let cmd = BuiltinCommand::all()
         .iter()
@@ -294,10 +468,12 @@ async fn execute_builtin_command(app: &tauri::AppHandle, key: &str) -> Result<()
         }
     }
 
-    // 隐藏浮层
-    if let Some(window) = app.get_webview_window("overlay") {
-        if let Err(error) = window.hide() {
-            log::warn!("hide overlay after command failed: {}", error);
+    // 根据 keep_open 决定是否隐藏浮层
+    if !keep_open {
+        if let Some(window) = app.get_webview_window("overlay") {
+            if let Err(error) = window.hide() {
+                log::warn!("hide overlay after command failed: {}", error);
+            }
         }
     }
 

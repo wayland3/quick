@@ -13,6 +13,8 @@ pub mod imaging;
 #[cfg(target_os = "windows")]
 pub mod input;
 #[cfg(target_os = "windows")]
+pub mod selection;
+#[cfg(target_os = "windows")]
 pub mod system;
 
 #[cfg(target_os = "linux")]
@@ -25,6 +27,8 @@ pub mod focus;
 pub mod imaging;
 #[cfg(target_os = "linux")]
 pub mod input;
+#[cfg(target_os = "linux")]
+pub mod selection;
 #[cfg(target_os = "linux")]
 pub mod system;
 

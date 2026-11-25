@@ -113,7 +113,7 @@ code,
   display: flex;
   height: 100%;
   width: 100%;
-  max-width: 720px;
+  max-width: var(--qw-panel-max-width, 640px);
   flex-direction: column;
   overflow: hidden;
   border-radius: 4px;
@@ -272,6 +272,27 @@ code,
   object-fit: contain;
 }
 
+.qw-row-brand,
+.qw-row-icon-badge {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  margin-inline: 4px;
+}
+
+.qw-row-icon-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--accent);
+  color: var(--bg);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1;
+}
+
 .qw-row-preview {
   min-width: 0;
   flex: 1;
@@ -304,15 +325,36 @@ code,
   background: var(--border);
 }
 
-/* 预览区 280px */
+/* 预览区在较窄的主浮层内留出足够列表空间 */
 .qw-preview {
   display: flex;
-  width: 280px;
+  width: min(280px, 38%);
+  min-width: 180px;
   flex: none;
   flex-direction: column;
   border-left: 1px solid var(--border);
   overflow: hidden;
   background: var(--surface);
+}
+
+@media (max-width: 480px) {
+  .qw-preview {
+    display: none;
+  }
+
+  .qw-search-input {
+    min-width: 80px;
+  }
+
+  .qw-chips {
+    min-width: 0;
+    flex-shrink: 1;
+    overflow-x: auto;
+  }
+
+  .qw-chip {
+    flex: none;
+  }
 }
 
 .qw-preview-body {
@@ -495,4 +537,121 @@ code,
   color: var(--text-faint);
   font-size: 12px;
   font-style: italic;
+}
+
+/* JSON 详情独立窗口（独立于浮层，浮层宽度恒定） */
+.qw-json-window {
+  --qw-panel-max-width: none;
+  height: 100%;
+  width: 100%;
+}
+
+.qw-json-window-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: none;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  cursor: grab;
+  user-select: none;
+}
+
+.qw-json-window-header:active {
+  cursor: grabbing;
+}
+
+.qw-json-window-content {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 16px;
+  font-family: 'JetBrains Mono', 'Cascadia Mono', Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.7;
+  user-select: text;
+  cursor: text;
+}
+
+.qw-json-detail-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.qw-json-detail-hint {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* JSON 树结构 */
+.qw-json-view {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.qw-json-object {
+  display: block;
+}
+
+.qw-json-line {
+  display: flex;
+  align-items: flex-start;
+  cursor: pointer;
+  padding: 1px 0;
+}
+
+.qw-json-line:hover {
+  background: var(--surface-hover);
+  border-radius: 2px;
+}
+
+.qw-json-toggle {
+  display: inline-block;
+  width: 12px;
+  flex-shrink: 0;
+  color: var(--text-faint);
+  font-size: 9px;
+  line-height: 1.9;
+  user-select: none;
+}
+
+.qw-json-key {
+  color: var(--accent);
+}
+
+.qw-json-string {
+  color: var(--success);
+}
+
+.qw-json-number {
+  color: var(--warning);
+}
+
+.qw-json-bool {
+  color: var(--danger);
+}
+
+.qw-json-null {
+  color: var(--text-faint);
+}
+
+.qw-json-bracket {
+  color: var(--text-muted);
+}
+
+.qw-json-hint {
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+.qw-json-indent {
+  display: block;
+}
+
+.qw-json-error {
+  padding: 12px 16px;
+  color: var(--danger);
+  font-size: 12px;
 }

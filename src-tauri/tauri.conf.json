@@ -15,8 +15,8 @@
       {
         "title": "Quick",
         "label": "overlay",
-        "width": 600,
-        "height": 400,
+        "width": 640,
+        "height": 480,
         "resizable": false,
         "fullscreen": false,
         "visible": false,
@@ -38,6 +38,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": ["icons/icon.png", "icons/icon.ico"]
+    "icon": ["icons/icon.png", "icons/icon.ico"],
+    "resources": ["resources/dictionaries/*"]
   }
 }

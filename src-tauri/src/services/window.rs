@@ -3,11 +3,11 @@
 use crate::error::AppError;
 use crate::platform::focus::{
     calculate_overlay_position, capture_foreground, get_cursor_monitor, release_stuck_modifiers,
-    restore, ForegroundWindow,
+    restore, ForegroundWindow, VerticalAlign,
 };
 use serde::Deserialize;
 use std::sync::{Arc, Mutex};
-use tauri::{Emitter, WebviewWindow, Window};
+use tauri::{Emitter, Manager, WebviewWindow};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverlayState {
@@ -21,6 +21,7 @@ pub enum OverlayState {
 pub enum OverlayMode {
     Launcher,
     Clipboard,
+    Convert,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,6 +37,7 @@ impl OverlayMode {
         match self {
             OverlayMode::Launcher => "launcher",
             OverlayMode::Clipboard => "clipboard",
+            OverlayMode::Convert => "convert",
         }
     }
 
@@ -43,6 +45,7 @@ impl OverlayMode {
         match s {
             "launcher" => Some(OverlayMode::Launcher),
             "clipboard" => Some(OverlayMode::Clipboard),
+            "convert" => Some(OverlayMode::Convert),
             _ => None,
         }
     }
@@ -80,7 +83,7 @@ impl OverlayManager {
         }
     }
 
-    pub fn show(&self, window: &Window, mode: OverlayMode) -> Result<(), AppError> {
+    pub fn show(&self, window: &WebviewWindow, mode: OverlayMode) -> Result<(), AppError> {
         log::info!("show: called with mode {:?}", mode);
         let mut state = self
             .state
@@ -136,13 +139,10 @@ impl OverlayManager {
         // 计算位置
         let monitor = get_cursor_monitor()?;
         let (x, y, width, height) = calculate_overlay_position(
-            monitor.work_left,
-            monitor.work_top,
-            monitor.work_width,
-            monitor.work_height,
-            monitor.scale_factor,
-            720,
-            400,
+            monitor.work_area(),
+            OVERLAY_WIDTH,
+            OVERLAY_NORMAL_HEIGHT,
+            VerticalAlign::Offset(0.2),
         );
 
         // 设置窗口位置和大小（逻辑像素）
@@ -180,6 +180,9 @@ impl OverlayManager {
 
         // 发送事件
         let _ = window.emit("overlay://shown", mode.as_str());
+        if mode != OverlayMode::Convert {
+            crate::services::jsondetail::hide_detail_window(window.app_handle());
+        }
 
         // 如果有动画，延迟更新状态
         if !reduced_motion {
@@ -217,6 +220,7 @@ impl OverlayManager {
                     drop(current);
                     // 隐藏 WebviewWindow
                     let _ = window.emit("overlay://hidden", ());
+                    crate::services::jsondetail::hide_detail_window(window.app_handle());
                     window.hide()?;
                     *self
                         .state
@@ -254,13 +258,10 @@ impl OverlayManager {
         // 计算位置
         let monitor = get_cursor_monitor()?;
         let (x, y, width, height) = calculate_overlay_position(
-            monitor.work_left,
-            monitor.work_top,
-            monitor.work_width,
-            monitor.work_height,
-            monitor.scale_factor,
-            720,
-            400,
+            monitor.work_area(),
+            OVERLAY_WIDTH,
+            OVERLAY_NORMAL_HEIGHT,
+            VerticalAlign::Offset(0.2),
         );
 
         // 设置窗口位置和大小（逻辑像素）
@@ -285,6 +286,9 @@ impl OverlayManager {
 
         // 发送事件
         let _ = window.emit("overlay://shown", mode.as_str());
+        if mode != OverlayMode::Convert {
+            crate::services::jsondetail::hide_detail_window(window.app_handle());
+        }
 
         // 如果有动画，延迟更新状态
         if !reduced_motion {
@@ -302,7 +306,7 @@ impl OverlayManager {
         Ok(())
     }
 
-    pub fn hide(&self, window: &Window, reason: HideReason) -> Result<(), AppError> {
+    pub fn hide(&self, window: &WebviewWindow, reason: HideReason) -> Result<(), AppError> {
         log::info!("hide: called with reason {:?}", reason);
         let mut state = self
             .state
@@ -331,8 +335,9 @@ impl OverlayManager {
             }
         }
 
-        // 发送事件
+        // 发送事件（详情独立窗口监听此事件后自行隐藏）
         let _ = window.emit("overlay://hidden", ());
+        crate::services::jsondetail::hide_detail_window(window.app_handle());
 
         // 隐藏窗口
         let reduced_motion = self.prefers_reduced_motion_reduced();
@@ -400,6 +405,7 @@ impl OverlayManager {
         }
 
         let _ = window.emit("overlay://hidden", ());
+        crate::services::jsondetail::hide_detail_window(window.app_handle());
         if let Err(e) = window.hide() {
             log::warn!("hide_for_paste: window.hide failed: {}", e);
         }
@@ -457,29 +463,52 @@ impl OverlayManager {
         Arc::clone(&self.paste_lock)
     }
 
-    pub fn resize(&self, window: &Window, height: u32) -> Result<(), AppError> {
-        // 夹取 120-560
-        let clamped_height = height.clamp(120, 560);
-
-        // 重新计算位置（垂直位置可能需要调整）
+    /// 调整浮层尺寸
+    ///
+    /// 不在这里读状态锁：`show`/`hide` 会在持锁期间做窗口操作，
+    /// resize 若同步取锁会与之竞争。前端已对 resize 做防抖，
+    /// 且浮层隐藏时改尺寸对用户无感，因此直接执行。
+    pub fn resize(
+        &self,
+        window: &WebviewWindow,
+        height: u32,
+        align: OverlayAlign,
+    ) -> Result<(), AppError> {
         let monitor = get_cursor_monitor()?;
-        let (x, y, width, _) = calculate_overlay_position(
-            monitor.work_left,
-            monitor.work_top,
-            monitor.work_width,
-            monitor.work_height,
-            monitor.scale_factor,
-            720,
-            clamped_height,
-        );
 
-        window.set_size(tauri::LogicalSize::new(width, clamped_height))?;
+        let logical_work_height = (monitor.work_height as f64 / monitor.scale_factor) as u32;
+        let (clamped_height, width) = compute_overlay_resize(height, logical_work_height);
+
+        // 位置：复用 calculate_overlay_position 处理单位换算与宽度收敛。
+        // 普通模式保持与 show 一致的 20% 偏移；JSON 详情按内容对齐。
+        let vertical = if clamped_height > OVERLAY_NORMAL_HEIGHT {
+            match align {
+                OverlayAlign::Top => VerticalAlign::Top,
+                OverlayAlign::Center => VerticalAlign::Center,
+            }
+        } else {
+            VerticalAlign::Offset(0.2)
+        };
+        let (x, y, effective_width, _) =
+            calculate_overlay_position(monitor.work_area(), width, clamped_height, vertical);
+
+        // 尺寸没变就什么都不做：避免重复的窗口操作与 WebView 重排竞争
+        if let Ok(current) = window.inner_size() {
+            let scale = monitor.scale_factor;
+            let current_width = (current.width as f64 / scale) as u32;
+            let current_height = (current.height as f64 / scale) as u32;
+            if current_width == effective_width && current_height == clamped_height {
+                return Ok(());
+            }
+        }
+
+        window.set_size(tauri::LogicalSize::new(effective_width, clamped_height))?;
         window.set_position(tauri::LogicalPosition::new(x, y))?;
 
         Ok(())
     }
 
-    pub fn on_blur(&self, window: &Window) -> Result<(), AppError> {
+    pub fn on_blur(&self, window: &WebviewWindow) -> Result<(), AppError> {
         let hide_on_blur = self
             .hide_on_blur
             .lock()
@@ -534,6 +563,23 @@ impl OverlayManager {
     }
 }
 
+/// 浮层标准尺寸
+const OVERLAY_WIDTH: u32 = 640;
+/// 普通模式高度
+const OVERLAY_NORMAL_HEIGHT: u32 = 480;
+
+/// 计算浮层 resize 后的高度与宽度（纯函数）
+///
+/// 浮层宽度**恒定**：JSON 详情是独立窗口，不占浮层空间，
+/// 左侧列表尺寸始终不变。
+pub fn compute_overlay_resize(requested_height: u32, logical_work_height: u32) -> (u32, u32) {
+    // 留出上下边距，至少保留 200px
+    let max_height = logical_work_height.saturating_sub(80).max(200);
+    let clamped_height = requested_height.clamp(120, max_height);
+
+    (clamped_height, OVERLAY_WIDTH)
+}
+
 /// blur 时是否应触发隐藏（R-013）
 ///
 /// `Showing` 是 120ms 淡入动画期：用户在这段时间内点走窗口，浮层仍在前台，
@@ -542,9 +588,40 @@ fn should_hide_on_blur(state: OverlayState) -> bool {
     matches!(state, OverlayState::Shown | OverlayState::Showing)
 }
 
+pub fn should_hide_for_focus(
+    overlay_focused: bool,
+    detail_focused: bool,
+    external_foreground: bool,
+) -> bool {
+    !overlay_focused && !detail_focused && external_foreground
+}
+
+/// 浮层垂直对齐方式
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OverlayAlign {
+    /// 顶部对齐（内容高，撑满时用）
+    Top,
+    /// 垂直居中（内容矮时用）
+    #[default]
+    Center,
+}
+
+impl OverlayAlign {
+    /// 解析前端传来的对齐标识，未知值退回居中
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "top" => OverlayAlign::Top,
+            _ => OverlayAlign::Center,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ResizePayload {
     pub height: u32,
+    /// 垂直对齐方式，缺省为居中
+    #[serde(default)]
+    pub align: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -555,6 +632,14 @@ pub struct ShowPayload {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn 自身窗口之间切换焦点不隐藏() {
+        assert!(!should_hide_for_focus(true, false, true));
+        assert!(!should_hide_for_focus(false, true, true));
+        assert!(!should_hide_for_focus(false, false, false));
+        assert!(should_hide_for_focus(false, false, true));
+    }
 
     #[test]
     fn 模式字符串转换() {
@@ -580,6 +665,62 @@ mod tests {
         let manager = OverlayManager::new();
         assert_eq!(manager.get_state(), OverlayState::Hidden);
         assert_eq!(manager.get_mode(), None);
+    }
+
+    #[test]
+    fn resize高度按工作区上限夹取() {
+        // 工作区 1080 高，请求 2000 应被夹到 1000
+        let (height, _) = compute_overlay_resize(2000, 1080);
+        assert_eq!(height, 1000);
+    }
+
+    #[test]
+    fn resize高度不足时夹到最小值() {
+        let (height, _) = compute_overlay_resize(10, 1080);
+        assert_eq!(height, 120);
+    }
+
+    #[test]
+    fn resize宽度恒定不受高度影响() {
+        // JSON 详情是独立窗口，浮层宽度始终不变
+        let (height, width) = compute_overlay_resize(720, 1080);
+        assert_eq!(height, 720);
+        assert_eq!(width, OVERLAY_WIDTH);
+    }
+
+    #[test]
+    fn 对齐方式解析() {
+        assert_eq!(OverlayAlign::from_str("top"), OverlayAlign::Top);
+        assert_eq!(OverlayAlign::from_str("center"), OverlayAlign::Center);
+        // 未知值退回居中
+        assert_eq!(OverlayAlign::from_str("unknown"), OverlayAlign::Center);
+        assert_eq!(OverlayAlign::from_str(""), OverlayAlign::Center);
+    }
+
+    #[test]
+    fn 默认对齐方式是居中() {
+        assert_eq!(OverlayAlign::default(), OverlayAlign::Center);
+    }
+
+    #[test]
+    fn resize普通高度使用标准宽度() {
+        let (height, width) = compute_overlay_resize(480, 1080);
+        assert_eq!(height, 480);
+        assert_eq!(width, 640);
+    }
+
+    #[test]
+    fn resize较高时主浮层仍为统一宽度() {
+        let (height, width) = compute_overlay_resize(560, 1080);
+        assert_eq!(height, 560);
+        assert_eq!(width, 640);
+    }
+
+    #[test]
+    fn resize小工作区仍保留可用高度() {
+        // 工作区只有 300 高，最大高度下限为 200
+        let (height, _) = compute_overlay_resize(500, 300);
+        assert_eq!(height, 220);
     }
 
     #[test]

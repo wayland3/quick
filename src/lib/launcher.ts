@@ -7,7 +7,7 @@ export interface AppIndexRebuildResult {
 }
 
 /** 结果类型 */
-export type LauncherKind = 'app' | 'file' | 'command';
+export type LauncherKind = 'app' | 'file' | 'command' | 'translate' | 'search';
 
 /** 单条启动器结果 */
 export interface LauncherItem {

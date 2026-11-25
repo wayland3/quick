@@ -2,14 +2,17 @@ pub mod appindex;
 pub mod clipboard;
 pub mod commands;
 pub mod hotkey;
+pub mod jsondetail;
 pub mod logging;
 pub mod notify;
 pub mod paste;
 pub mod query;
 pub mod ranking;
 pub mod retention;
+pub mod selection;
 pub mod storage;
 pub mod thumbnail;
+pub mod translate;
 pub mod tray;
 pub mod window;
 

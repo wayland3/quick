@@ -819,8 +819,8 @@ mod windows_impl {
                 .expect("定位测试可执行文件")
                 .to_string_lossy()
                 .to_string();
-            let png =
-                extract_icon_png(&exe, None).expect("exe 应能提取图标（无资源时系统也会给默认图标）");
+            let png = extract_icon_png(&exe, None)
+                .expect("exe 应能提取图标（无资源时系统也会给默认图标）");
             assert_eq!(&png[0..4], b"\x89PNG", "输出应为 PNG 字节");
             let decoded = image::load_from_memory(&png).expect("图标 PNG 应可解码");
             assert_eq!(decoded.dimensions(), (32, 32));
@@ -993,8 +993,16 @@ mod linux_impl {
     /// 主题图标名 → PNG 字节（hicolor 目录从大到小 + pixmaps，支持 PNG 与 ICO）
     fn resolve_theme_icon(icon_ref: &str) -> Option<Vec<u8>> {
         let sizes = [
-            "1024x1024", "512x512", "256x256", "192x192",
-            "128x128", "96x96", "72x72", "64x64", "48x48", "32x32",
+            "1024x1024",
+            "512x512",
+            "256x256",
+            "192x192",
+            "128x128",
+            "96x96",
+            "72x72",
+            "64x64",
+            "48x48",
+            "32x32",
         ];
 
         // hicolor 主题目录：先找 PNG（验证有效性），再找 ICO
@@ -1058,11 +1066,25 @@ mod linux_impl {
         // 在安装目录的常见位置查找图标
         let icon_candidates = [
             // VSCode 风格：resources/app/resources/linux/<icon>.png
-            install_root.join("resources").join("app").join("resources").join("linux").join(format!("{icon_ref}.png")),
-            install_root.join("resources").join("app").join("resources").join("linux").join(format!("{icon_ref}.ico")),
+            install_root
+                .join("resources")
+                .join("app")
+                .join("resources")
+                .join("linux")
+                .join(format!("{icon_ref}.png")),
+            install_root
+                .join("resources")
+                .join("app")
+                .join("resources")
+                .join("linux")
+                .join(format!("{icon_ref}.ico")),
             // 通用风格：resources/<icon>.png
-            install_root.join("resources").join(format!("{icon_ref}.png")),
-            install_root.join("resources").join(format!("{icon_ref}.ico")),
+            install_root
+                .join("resources")
+                .join(format!("{icon_ref}.png")),
+            install_root
+                .join("resources")
+                .join(format!("{icon_ref}.ico")),
             // 根目录风格
             install_root.join(format!("{icon_ref}.png")),
             install_root.join(format!("{icon_ref}.ico")),

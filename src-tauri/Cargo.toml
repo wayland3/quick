@@ -30,6 +30,12 @@ sha2 = "0.10"
 image = { version = "0.25", default-features = false, features = ["png"] }
 # ICO 解析：Linux 下部分应用（如钉钉）的 .desktop Icon 指向 .ico 文件
 ico = "0.6"
+# 时间处理（快速转换功能）
+chrono = "0.4"
+# MD5 计算（快速转换功能）
+md-5 = "0.10"
+# URL 编码（启动器搜索兜底）
+urlencoding = "2.1"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
@@ -38,6 +44,7 @@ windows = { version = "0.62", features = [
     "Win32_Graphics_Imaging",
     "Win32_UI_HiDpi",
     "Win32_System_Com",
+    "Win32_System_Ole",
     "Win32_UI_WindowsAndMessaging",
     "Win32_System_Threading",
     "Win32_Security",
@@ -51,11 +58,13 @@ windows = { version = "0.62", features = [
     "Win32_System_Registry",
     "Win32_System_Environment",
     "Win32_System_Shutdown",
+    "Win32_UI_Accessibility",
 ] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 arboard = "3"
 enigo = "0.2"
+x11-clipboard = "0.9"
 
 [features]
 default = ["custom-protocol"]

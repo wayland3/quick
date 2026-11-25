@@ -9,7 +9,7 @@ interface HotkeyRecorderProps {
   /** 当前保存的热键值 */
   value: string;
   /** 热键动作标识，用于 suspend/resume */
-  action: 'launcher' | 'clipboard';
+  action: 'launcher' | 'clipboard' | 'convert';
   /** 保存回调 */
   onSave: (value: string) => Promise<void>;
   /** 占位文本 */
