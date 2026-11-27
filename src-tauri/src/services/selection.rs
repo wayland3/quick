@@ -48,7 +48,8 @@ impl SelectionSource {
     pub(crate) fn capture() -> Self {
         #[cfg(target_os = "windows")]
         {
-            let foreground = crate::platform::focus::capture_foreground();
+            let foreground = crate::platform::focus::capture_foreground()
+                .filter(|window| window.pid != std::process::id());
             let target = foreground
                 .as_ref()
                 .and_then(|fg| selection::FocusedCopyTarget::capture(fg.hwnd, fg.pid));

@@ -133,8 +133,8 @@ search:    → 解析 index 与 query → 从 settings.search_engines 取出 url
 1. **无障碍优先、无副作用**：Windows 走 UIA（焦点元素 + 祖先回溯，500ms 超时），Linux 走 X11 PRIMARY；不模拟 Ctrl+C、不碰剪贴板。
 2. **UIA 失败后 Windows 走可选 Ctrl+C 回退**（钉钉等自绘控件应用；流程、副作用与终端黑名单见 convert §4.4-4.5，设置「划词读取增强」控制，默认开）。
 3. services 层统一 `trim`、空白视为未选中、超长截断（10 万字符）。
-4. `services/hotkey.rs`：`HotkeyAction::Launcher` 读到选区 → `emit("launcher://open", selected)`；读不到 → 回退 `hotkey://pressed`，保留上次查询词。
-5. `App.tsx`：监听 `launcher://open` → `overlayShow('launcher')` + `setLauncherPrefill(text)`；`overlay://hidden` 时清空 prefill，避免残留到下次打开。
+4. 从隐藏状态按启动器热键时，后台先读选区再显示浮层。读到选区时额外发送 `launcher://prefill`。没有预填时保留启动器现有查询行为。
+5. `App.tsx` 消费 `overlay://shown` 和 `launcher://prefill`，收到 `overlay://hidden` 时清空预填。
 6. `LauncherPanel` 新增 `prefill` / `onPrefillConsumed` props（与 ConvertPanel 同构）：prefill 非空时替换 query 并消费。
 
 读取失败/超时由 selection 层兜底返回空，不影响浮层打开。

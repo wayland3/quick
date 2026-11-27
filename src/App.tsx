@@ -37,12 +37,6 @@ function App() {
     // 后端 `app.emit` 会广播到所有窗口，设置窗口若也注册这些监听，
     // 会误调 `overlay_show` 导致设置窗口被当作浮层显示。
     if (!isSettingsWindow && !isJsonDetailWindow) {
-      // 监听 overlay://show 事件（来自托盘菜单）：同时重查失败热键
-      const unlistenShow = listen<string>('overlay://show', (event) => {
-        setMode(event.payload);
-        showFailedHotkeys();
-      });
-
       // 监听 overlay://shown 事件（浮层显示后）
       const unlistenShown = listen<string>('overlay://shown', (event) => {
         setMode(event.payload);
@@ -54,21 +48,6 @@ function App() {
         setMode('');
         setLauncherPrefill('');
         setConvertPrefill('');
-      });
-
-      // 监听热键按下事件
-      const unlistenHotkey = listen<string>('hotkey://pressed', (event) => {
-        const action = event.payload;
-        if (action === 'launcher') {
-          setMode('launcher');
-          ipc.overlayShow('launcher').catch(console.error);
-        } else if (action === 'clipboard') {
-          setMode('clipboard');
-          ipc.overlayShow('clipboard').catch(console.error);
-        } else if (action === 'convert') {
-          setMode('convert');
-          ipc.overlayShow('convert').catch(console.error);
-        }
       });
 
       // 监听启动器预填事件（划词读取完成后，浮层已显示）
@@ -113,10 +92,8 @@ function App() {
       window.addEventListener('keydown', handleKeyDown);
 
       return () => {
-        unlistenShow.then(f => f());
         unlistenShown.then(f => f());
         unlistenHidden.then(f => f());
-        unlistenHotkey.then(f => f());
         unlistenLauncherPrefill.then(f => f());
         unlistenConvertPrefill.then(f => f());
         window.removeEventListener('keydown', handleKeyDown);

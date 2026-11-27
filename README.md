@@ -85,10 +85,21 @@
 
 ## 文档
 
-| 文件                                                 | 内容                                      |
-|------------------------------------------------------|-------------------------------------------|
-| [`AGENTS.md`](./AGENTS.md)                           | AI 协作总纲：硬规则、命令、目录           |
-| [`TASKS.md`](./TASKS.md)                             | 当前待办与遗留问题（唯一进度源）          |
-| [`docs/SPEC.md`](./docs/SPEC.md)                     | 功能规格与 UI 规范                        |
-| [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md)     | 架构、核心选型、IPC 契约、数据库 schema   |
-| [`docs/PLATFORM-NOTES.md`](./docs/PLATFORM-NOTES.md) | 平台特定 API 坑位、实现要点与代码示例     |
+### 产品文档（做什么）
+
+| 想知道                       | 看                                   |
+|------------------------------|--------------------------------------|
+| 全局约定（热键、浮层、键盘） | `docs/product/features/global.md`    |
+| 启动器功能规格               | `docs/product/features/launcher.md`  |
+| 剪贴板历史功能规格           | `docs/product/features/clipboard.md` |
+| 快速转换功能规格             | `docs/product/features/convert.md`   |
+| 设置项规格                   | `docs/product/features/settings.md`  |
+
+### 设计文档（怎么做）
+
+| 想知道                     | 看                            |
+|----------------------------|-------------------------------|
+| 架构、线程、窗口、错误模型 | `docs/design/ARCHITECTURE.md` |
+| 数据库表结构与迁移         | `docs/design/DATABASE.md`     |
+| IPC 接口契约               | `docs/design/IPC.md`          |
+| 发布测试清单               | `docs/design/RELEASE-TEST.md` |

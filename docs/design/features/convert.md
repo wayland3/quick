@@ -111,45 +111,7 @@ pub struct ConvertQueryResult {
 
 ### 3.1 划词预填链路
 
-**关键流程**：热键触发 → 立即显示浮层（被动，不抢焦点）→ 后台读取选中文本 → 预填事件 → 激活浮层
-
-浮层显示与划词读取并行：浮层用 `SW_SHOWNA`（Windows）显示，不抢焦点，保证 UIA `GetFocusedElement()` 仍返回原应用。划词读取完成后，用 `SetForegroundWindow` 激活浮层为正式前台窗口。
-
-```rust
-// src-tauri/src/services/hotkey.rs
-
-// 热键回调中（非切换场景）：
-if action == HotkeyAction::Convert || action == HotkeyAction::Launcher {
-    // 1. 被动显示浮层（SW_SHOWNA，不抢焦点，原应用保持前台）
-    overlay.show_passive(&window, mode)?;
-    
-    // 2. 后台线程读取选中文本（UIA / X11 PRIMARY）
-    spawn(move || {
-        let text = capture_selected_text(app, source);
-        
-        // 3. 发送预填事件（浮层已可见，前端直接设置输入值）
-        app.emit("convert://prefill", text.unwrap_or_default()).ok();
-        
-        // 4. 激活浮层为正式前台窗口
-        overlay.activate(&window);
-    });
-}
-```
-
-```typescript
-// src/App.tsx
-
-// 浮层显示由后端 overlay://shown 事件驱动（被动显示时同步发出）
-listen<string>('overlay://shown', (event) => {
-  setMode(event.payload);
-});
-
-// 预填事件：划词读取完成后，仅设置输入值（浮层已可见）
-listen<string>('convert://prefill', (event) => {
-  if (event.payload) setConvertPrefill(event.payload);
-});
-```
-```
+从隐藏状态按热键时，`services/hotkey.rs` 在后台读取原应用选区，然后提交带窗口版本的显示请求。若期间窗口已经重新打开或切换，过期请求直接丢弃。Windows 划词排除 Quick 自身窗口。有效请求先发 `overlay://shown`，再按需发 `convert://prefill`。前端仅消费结果事件。
 
 ### 3.2 命令签名
 
@@ -318,6 +280,7 @@ suppression.seal(seq_before, seq_after, restored_hash)
 | 终端内捕获鼠标的 TUI（如 opencode） | ⚠️ 需按 Shift 选择 | 不触发（终端黑名单） | TUI 鼠标跟踪接管拖拽，终端没有选区 |
 | 钉钉聊天 | ❌ | ✅ Ctrl+C 回退 | `im_chat::ChatBubbleWidget` 是自绘 Group 控件，UIA 子树无任何 TextPattern（2026-11-26 日志三次复现） |
 | Navicat（TEEAutoCompleteMemo） | 日志未读到文本 | `WM_COPY` 已真机验证预填和剪贴板文本还原 | 通过 `GetGUIThreadInfo` 定位 Windows 焦点子控件 |
+| Navicat 表格单元格（TNavicatInplaceEdit） | 日志未读到文本 | `WM_COPY` | 使用相同的焦点复查和剪贴板还原流程 |
 | WinUI 记事本 | ❌ | ✅ 可读 | `RichEditD2DPT` 只返回退化空 range |
 | 管理员窗口 | ❌ | ❌ | UIPI 双向拦截 |
 
@@ -941,7 +904,7 @@ describe('ConvertPanel', () => {
 2. **热键注册**：`register_startup_hotkeys` 支持 convert
 3. **IPC 命令骨架**：`convert_query`、`convert_copy`、`convert_open`
 4. **前端 ConvertPanel 骨架**：空输入框 + 空列表，验证浮层显示
-5. **划词预填链路**：`convert://open` 事件 + `prefill` ref
+5. **划词预填链路**：`overlay://shown` 与 `convert://prefill` 事件
 
 ### 阶段 2：转换逻辑
 6. **时间转换**：时间戳识别、时间字符串解析、各时区输出
@@ -1094,29 +1057,7 @@ impl Settings {
 
 ### 10.5 前端 App.tsx 扩展
 
-```typescript
-// src/App.tsx
-
-// 监听热键事件
-listen<string>('hotkey://pressed', (event) => {
-  const action = event.payload;
-  if (action === 'launcher') {
-    ipc.overlayShow('launcher').catch(console.error);
-  } else if (action === 'clipboard') {
-    ipc.overlayShow('clipboard').catch(console.error);
-  } else if (action === 'convert') {
-    // 转换热键：读取选中文本并下发
-    ipc.convertOpen().catch(console.error);
-  }
-});
-
-// 监听转换打开事件（带选中文本）
-listen<string>('convert://open', (event) => {
-  setMode('convert');
-  // 通过 ref 预填输入框
-  convertPanelRef.current?.prefill(event.payload ?? '');
-});
-```
+`App.tsx` 根据 `overlay://shown` 切换渲染模式，将 `convert://prefill` 的文本传给转换面板。显隐和事件顺序见 §3.1。
 
 ### 10.6 前端 ConvertPanel 预填支持
 

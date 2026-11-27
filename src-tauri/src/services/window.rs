@@ -6,6 +6,7 @@ use crate::platform::focus::{
     restore, ForegroundWindow, VerticalAlign,
 };
 use serde::Deserialize;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager, WebviewWindow};
 
@@ -27,6 +28,7 @@ pub enum OverlayMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HideReason {
     UserCommand, // overlay_hide 命令，带恢复
+    Hotkey,      // 同键关闭，无动画，恢复焦点
     Blur,        // 失焦隐藏，不带恢复
     ModeSwitch,  // 模式切换，不带恢复
     Launch,      // 打开应用后隐藏，不恢复焦点（让新应用留在前台）
@@ -57,6 +59,7 @@ impl OverlayMode {
 
 pub struct OverlayManager {
     state: Arc<Mutex<OverlayState>>,
+    revision: Arc<AtomicU64>,
     current_mode: Arc<Mutex<Option<OverlayMode>>>,
     hide_on_blur: Arc<Mutex<bool>>,
     prefers_reduced_motion: Arc<Mutex<bool>>,
@@ -79,6 +82,7 @@ impl OverlayManager {
     pub fn new() -> Self {
         Self {
             state: Arc::new(Mutex::new(OverlayState::Hidden)),
+            revision: Arc::new(AtomicU64::new(0)),
             current_mode: Arc::new(Mutex::new(None)),
             hide_on_blur: Arc::new(Mutex::new(true)),
             prefers_reduced_motion: Arc::new(Mutex::new(false)),
@@ -88,78 +92,96 @@ impl OverlayManager {
     }
 
     pub fn show(&self, window: &WebviewWindow, mode: OverlayMode) -> Result<(), AppError> {
-        self.show_inner(window, mode, false)
+        self.show_inner(window, mode, None, None, true)
     }
 
-    /// 被动显示：窗口可见但不抢焦点
-    ///
-    /// 用于划词预填场景：先显示浮层让 UIA 在原应用上读取选区，
-    /// 选区读取完成后再由 `activate` 提升为正式前台窗口。
-    pub fn show_passive(&self, window: &WebviewWindow, mode: OverlayMode) -> Result<(), AppError> {
-        self.show_inner(window, mode, true)
+    pub(crate) fn reveal_launcher(&self, window: &WebviewWindow) -> Result<(), AppError> {
+        self.show_inner(window, OverlayMode::Launcher, None, None, false)
     }
 
-    /// 激活已显示的浮层（从「可见但不抢焦点」提升为正式前台）
-    ///
-    /// 仅在浮层仍处于 Showing/Shown 状态时激活，避免用户已关闭后重新拉起。
-    pub fn activate(&self, window: &WebviewWindow) {
-        let state = self.get_state();
-        if !matches!(state, OverlayState::Showing | OverlayState::Shown) {
-            return;
-        }
-        #[cfg(target_os = "windows")]
-        {
-            if let Ok(hwnd) = window.hwnd() {
-                crate::platform::focus::activate_window(hwnd.0 as isize);
-            }
-        }
-        let _ = window.set_focus();
+    pub(crate) fn hotkey_snapshot(&self) -> Result<(OverlayState, u64), AppError> {
+        let state = self.lock_state()?;
+        Ok((*state, self.revision()))
+    }
+
+    pub(crate) fn revision(&self) -> u64 {
+        self.revision.load(Ordering::Relaxed)
+    }
+
+    fn matches_revision(&self, expected: Option<u64>) -> bool {
+        expected.is_none_or(|revision| revision == self.revision())
+    }
+
+    fn lock_state(&self) -> Result<std::sync::MutexGuard<'_, OverlayState>, AppError> {
+        self.state
+            .lock()
+            .map_err(|_| AppError::Internal("overlay state lock poisoned".into()))
+    }
+
+    pub(crate) fn show_from_hotkey(
+        &self,
+        window: &WebviewWindow,
+        mode: OverlayMode,
+        revision: u64,
+        prefill: Option<String>,
+    ) -> Result<(), AppError> {
+        self.show_inner(window, mode, Some(revision), prefill, true)
     }
 
     fn show_inner(
         &self,
         window: &WebviewWindow,
         mode: OverlayMode,
-        passive: bool,
+        expected_revision: Option<u64>,
+        prefill: Option<String>,
+        toggle: bool,
     ) -> Result<(), AppError> {
-        log::info!("show: called with mode {:?} passive={}", mode, passive);
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| AppError::Internal("lock poisoned".into()))?;
+        let mut state = self.lock_state()?;
+        let revision = self.revision();
+        if !self.matches_revision(expected_revision) {
+            log::info!("overlay: ignoring stale hotkey result");
+            return Ok(());
+        }
 
         log::info!("show: current state is {:?}", *state);
 
         // 状态机转换
         match *state {
-            OverlayState::Shown => {
+            OverlayState::Shown | OverlayState::Showing => {
                 // 已显示，切换语义：如果同 mode 则隐藏
                 let current = self
                     .current_mode
                     .lock()
                     .map_err(|_| AppError::Internal("lock poisoned".into()))?;
                 if *current == Some(mode) {
+                    if !toggle {
+                        window.set_focus()?;
+                        return Ok(());
+                    }
                     log::info!("show: same mode, will hide");
                     drop(state);
                     drop(current);
-                    return self.hide(window, HideReason::ModeSwitch);
+                    return self.hide_if_current(
+                        window,
+                        if expected_revision.is_some() {
+                            HideReason::Hotkey
+                        } else {
+                            HideReason::ModeSwitch
+                        },
+                        Some(revision),
+                    );
                 }
                 log::info!("show: different mode, will switch");
                 // 不同 mode，直接切换（不 capture，浮层已是前台）
             }
             OverlayState::Hiding => {
-                log::info!("show: state is Hiding, will cancel and show");
-                // 取消隐藏，立即显示（不 capture）
-            }
-            OverlayState::Showing => {
-                log::info!("show: already Showing, ignoring");
-                // 已在显示中，忽略
+                log::info!("show: waiting for hide and focus restoration");
                 return Ok(());
             }
             OverlayState::Hidden => {
                 log::info!("show: state is Hidden, will show normally");
                 // 正常显示：capture 前台窗口
-                let prev = capture_foreground();
+                let prev = capture_foreground().filter(|prev| prev.pid != std::process::id());
                 log::info!(
                     "overlay show: captured_prev={}, elevated={}",
                     prev.is_some(),
@@ -187,151 +209,19 @@ impl OverlayManager {
         window.set_size(tauri::LogicalSize::new(width, height))?;
         window.set_position(tauri::LogicalPosition::new(x, y))?;
 
-        if passive {
-            // 被动显示：使用平台层 SW_SHOWNA（Windows），不抢焦点
-            #[cfg(target_os = "windows")]
-            {
-                let hwnd = window.hwnd().map(|h| h.0 as isize).unwrap_or(0);
-                let work_area = monitor.work_area();
-                crate::platform::focus::show_no_activate(
-                    work_area.left + (x as f64 * monitor.scale_factor) as i32,
-                    work_area.top + (y as f64 * monitor.scale_factor) as i32,
-                    (width as f64 * monitor.scale_factor) as u32,
-                    (height as f64 * monitor.scale_factor) as u32,
-                    hwnd,
-                );
-            }
-            #[cfg(not(target_os = "windows"))]
-            {
-                window.show()?;
-            }
-        } else {
-            // 显示窗口
-            window.show()?;
-
-            // Linux 上需要延迟设置焦点，避免窗口管理器立即切换焦点
-            #[cfg(target_os = "linux")]
-            {
-                let window_clone = window.clone();
-                std::thread::spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                    let _ = window_clone.set_focus();
-                });
-            }
-            #[cfg(not(target_os = "linux"))]
-            {
-                let _ = window.set_focus();
-            }
-        }
-
-        // 更新状态
-        let reduced_motion = self.prefers_reduced_motion_reduced();
-        *state = if reduced_motion || passive {
-            OverlayState::Shown
-        } else {
-            OverlayState::Showing
-        };
-        *self
-            .current_mode
-            .lock()
-            .map_err(|_| AppError::Internal("lock poisoned".into()))? = Some(mode);
-
-        // 发送事件
-        let _ = window.emit("overlay://shown", mode.as_str());
-        if mode != OverlayMode::Convert {
-            crate::services::jsondetail::hide_detail_window(window.app_handle(), false);
-        }
-
-        // 如果有动画，延迟更新状态（passive 模式跳过动画）
-        if !reduced_motion && !passive {
-            let state_clone = Arc::clone(&self.state);
-            std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(120));
-                if let Ok(mut s) = state_clone.lock() {
-                    if *s == OverlayState::Showing {
-                        *s = OverlayState::Shown;
-                    }
-                }
-            });
-        }
-
-        Ok(())
-    }
-
-    /// 显示 WebviewWindow（用于托盘图标点击等场景）
-    pub fn show_webview(&self, window: &WebviewWindow, mode: OverlayMode) -> Result<(), AppError> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| AppError::Internal("lock poisoned".into()))?;
-
-        // 状态机转换
-        match *state {
-            OverlayState::Shown => {
-                // 已显示，切换语义：如果同 mode 则隐藏
-                let current = self
-                    .current_mode
-                    .lock()
-                    .map_err(|_| AppError::Internal("lock poisoned".into()))?;
-                if *current == Some(mode) {
-                    drop(state);
-                    drop(current);
-                    // 隐藏 WebviewWindow
-                    let _ = window.emit("overlay://hidden", ());
-                    crate::services::jsondetail::hide_detail_window(window.app_handle(), false);
-                    window.hide()?;
-                    *self
-                        .state
-                        .lock()
-                        .map_err(|_| AppError::Internal("lock poisoned".into()))? =
-                        OverlayState::Hidden;
-                    return Ok(());
-                }
-                // 不同 mode，直接切换
-            }
-            OverlayState::Hiding => {
-                // 取消隐藏，立即显示
-            }
-            OverlayState::Showing => {
-                // 已在显示中，忽略
-                return Ok(());
-            }
-            OverlayState::Hidden => {
-                // 正常显示：capture 前台窗口
-                let prev = capture_foreground();
-                log::info!(
-                    "overlay show (webview): captured_prev={}, elevated={}",
-                    prev.is_some(),
-                    prev.as_ref()
-                        .map(|window| window.is_elevated)
-                        .unwrap_or(false)
-                );
-                *self
-                    .prev_window
-                    .lock()
-                    .map_err(|_| AppError::Internal("lock poisoned".into()))? = prev;
-            }
-        }
-
-        // 计算位置
-        let monitor = get_cursor_monitor()?;
-        let (x, y, width, height) = calculate_overlay_position(
-            monitor.work_area(),
-            OVERLAY_WIDTH,
-            OVERLAY_NORMAL_HEIGHT,
-            VerticalAlign::Offset(0.2),
-        );
-
-        // 设置窗口位置和大小（逻辑像素）
-        window.set_size(tauri::LogicalSize::new(width, height))?;
-        window.set_position(tauri::LogicalPosition::new(x, y))?;
-
-        // 显示窗口
         window.show()?;
+        if let Err(e) = window.set_ignore_cursor_events(false) {
+            log::warn!("show: set_ignore_cursor_events(false) failed: {}", e);
+        }
+        #[cfg(not(target_os = "linux"))]
         let _ = window.set_focus();
 
         // 更新状态
         let reduced_motion = self.prefers_reduced_motion_reduced();
+        let shown_revision = self
+            .revision
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1);
         *state = if reduced_motion {
             OverlayState::Shown
         } else {
@@ -344,17 +234,45 @@ impl OverlayManager {
 
         // 发送事件
         let _ = window.emit("overlay://shown", mode.as_str());
+        if let Some(text) = prefill {
+            let event = match mode {
+                OverlayMode::Launcher => Some("launcher://prefill"),
+                OverlayMode::Convert => Some("convert://prefill"),
+                OverlayMode::Clipboard => None,
+            };
+            if let Some(event) = event {
+                let _ = window.emit(event, text);
+            }
+        }
         if mode != OverlayMode::Convert {
             crate::services::jsondetail::hide_detail_window(window.app_handle(), false);
         }
 
-        // 如果有动画，延迟更新状态
+        #[cfg(target_os = "linux")]
+        {
+            let window = window.clone();
+            let state = Arc::clone(&self.state);
+            let revision = Arc::clone(&self.revision);
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                if let Ok(state) = state.lock() {
+                    if revision.load(Ordering::Relaxed) == shown_revision
+                        && should_hide_on_blur(*state)
+                    {
+                        let _ = window.set_focus();
+                    }
+                }
+            });
+        }
         if !reduced_motion {
             let state_clone = Arc::clone(&self.state);
+            let revision = Arc::clone(&self.revision);
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_millis(120));
                 if let Ok(mut s) = state_clone.lock() {
-                    if *s == OverlayState::Showing {
+                    if *s == OverlayState::Showing
+                        && revision.load(Ordering::Relaxed) == shown_revision
+                    {
                         *s = OverlayState::Shown;
                     }
                 }
@@ -365,88 +283,82 @@ impl OverlayManager {
     }
 
     pub fn hide(&self, window: &WebviewWindow, reason: HideReason) -> Result<(), AppError> {
-        log::info!("hide: called with reason {:?}", reason);
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| AppError::Internal("lock poisoned".into()))?;
+        self.hide_if_current(window, reason, None)
+    }
 
-        // 状态机转换
-        match *state {
-            OverlayState::Hidden => {
-                // 已隐藏，幂等
-                log::info!("hide: already Hidden, skipping");
+    fn hide_if_current(
+        &self,
+        window: &WebviewWindow,
+        reason: HideReason,
+        expected_revision: Option<u64>,
+    ) -> Result<(), AppError> {
+        log::info!("hide: called with reason {:?}", reason);
+        let mut state = self.lock_state()?;
+        if !self.matches_revision(expected_revision) {
+            return Ok(());
+        }
+        let visible = should_hide_on_blur(*state);
+        if reason == HideReason::Blur {
+            let hide_on_blur = *self
+                .hide_on_blur
+                .lock()
+                .map_err(|_| AppError::Internal("overlay blur setting lock poisoned".into()))?;
+            if !hide_on_blur || !visible {
+                // 详情可以独立于主浮层保留，但失焦检查必须属于同一次显示。
+                crate::services::jsondetail::hide_detail_window(window.app_handle(), true);
                 return Ok(());
             }
-            OverlayState::Hiding => {
-                // 已在隐藏中，忽略
-                log::info!("hide: already Hiding, skipping");
-                return Ok(());
-            }
-            OverlayState::Showing => {
-                // 取消显示，立即隐藏
-                log::info!("hide: state is Showing, will hide immediately");
-            }
-            OverlayState::Shown => {
-                // 正常隐藏
-                log::info!("hide: state is Shown, will hide normally");
-            }
+        } else if !visible {
+            return Ok(());
         }
 
-        // 主浮层失焦时按设置保留详情；其他隐藏原因始终关闭详情
+        let animate = reason == HideReason::UserCommand && !self.prefers_reduced_motion_reduced();
+        let restore_focus = matches!(reason, HideReason::UserCommand | HideReason::Hotkey);
+        let prev = restore_focus.then(|| self.prev_window()).flatten();
+        if !animate {
+            hide_overlay_window(window)?;
+        }
+        self.revision.fetch_add(1, Ordering::Relaxed);
+        *state = if animate || prev.is_some() {
+            OverlayState::Hiding
+        } else {
+            OverlayState::Hidden
+        };
         let _ = window.emit("overlay://hidden", ());
         crate::services::jsondetail::hide_detail_window(
             window.app_handle(),
             detail_hide_checks_blur_setting(reason),
         );
+        drop(state);
 
-        // 隐藏窗口
-        let reduced_motion = self.prefers_reduced_motion_reduced();
-        log::info!(
-            "hide: reduced_motion={}, reason={:?}",
-            reduced_motion,
-            reason
-        );
-        if reduced_motion || reason != HideReason::UserCommand {
-            // 立即隐藏（无动画或不需要恢复焦点）
-            log::info!("hide: calling window.hide() immediately");
-            window.hide()?;
-            *state = OverlayState::Hidden;
-            log::info!("hide: window hidden, state set to Hidden");
-
-            // 仅 UserCommand 恢复焦点
-            if reason == HideReason::UserCommand {
-                if let Some(prev) = self.prev_window.lock().ok().and_then(|p| p.clone()) {
-                    // spawn_blocking 执行恢复，避免阻塞 async runtime
-                    let _ = std::thread::spawn(move || {
-                        if restore(&prev, 150).is_ok() {
-                            release_stuck_modifiers(&prev);
-                        }
-                    });
-                }
-            }
-        } else {
-            // 带动画隐藏，延迟后恢复焦点
-            *state = OverlayState::Hiding;
+        if animate || prev.is_some() {
             let state_clone = Arc::clone(&self.state);
             let window_clone = window.clone();
-            let prev_window = self.prev_window.lock().ok().and_then(|p| p.clone());
             std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(80));
-                let _ = window_clone.hide();
-                if let Ok(mut s) = state_clone.lock() {
-                    if *s == OverlayState::Hiding {
-                        *s = OverlayState::Hidden;
+                if animate {
+                    std::thread::sleep(std::time::Duration::from_millis(80));
+                    if let Err(error) = hide_overlay_window(&window_clone) {
+                        log::warn!("overlay: delayed hide failed: {}", error);
+                        if let Ok(mut state) = state_clone.lock() {
+                            *state = OverlayState::Shown;
+                            let app = window_clone.app_handle();
+                            if let Some(mode) = app.state::<OverlayManager>().get_mode() {
+                                let _ = window_clone.emit("overlay://shown", mode.as_str());
+                            }
+                        }
+                        return;
                     }
                 }
-
-                // 恢复焦点
-                if reason == HideReason::UserCommand {
-                    if let Some(prev) = prev_window {
-                        if restore(&prev, 150).is_ok() {
-                            release_stuck_modifiers(&prev);
-                        }
+                if let Some(prev) = prev {
+                    // Tauri 的窗口修改是异步派发的，先等界面线程处理 hide。
+                    let _ = window_clone.is_visible();
+                    match restore(&prev, 150) {
+                        Ok(()) => release_stuck_modifiers(&prev),
+                        Err(error) => log::warn!("overlay: focus restoration failed: {}", error),
                     }
+                }
+                if let Ok(mut state) = state_clone.lock() {
+                    *state = OverlayState::Hidden;
                 }
             });
         }
@@ -458,23 +370,27 @@ impl OverlayManager {
     ///
     /// 不走 `hide` 的 80ms 动画线程，保证后续写剪贴板 / `Ctrl+V` 的时序可控。
     pub fn hide_for_paste(&self, window: &WebviewWindow) -> RestoreOutcome {
-        {
-            let Ok(mut state) = self.state.lock() else {
+        let prev = {
+            let Ok(mut state) = self.lock_state() else {
                 return RestoreOutcome::Failed;
             };
-            *state = OverlayState::Hidden;
-        }
-
-        let _ = window.emit("overlay://hidden", ());
-        crate::services::jsondetail::hide_detail_window(window.app_handle(), false);
-        if let Err(e) = window.hide() {
-            log::warn!("hide_for_paste: window.hide failed: {}", e);
-        }
+            if !should_hide_on_blur(*state) {
+                return RestoreOutcome::Failed;
+            }
+            if let Err(error) = hide_overlay_window(window) {
+                log::warn!("hide_for_paste: window.hide failed: {}", error);
+                return RestoreOutcome::Failed;
+            }
+            self.revision.fetch_add(1, Ordering::Relaxed);
+            *state = OverlayState::Hiding;
+            let _ = window.emit("overlay://hidden", ());
+            crate::services::jsondetail::hide_detail_window(window.app_handle(), false);
+            self.prev_window()
+        };
 
         // 给 DWM 一点时间真正撤下前台窗口，再恢复目标焦点
         std::thread::sleep(std::time::Duration::from_millis(20));
 
-        let prev = self.prev_window.lock().ok().and_then(|p| p.clone());
         let outcome = match prev {
             None => RestoreOutcome::NoTarget,
             Some(prev) => match restore(&prev, 150) {
@@ -489,27 +405,37 @@ impl OverlayManager {
                 }
             },
         };
+        if let Ok(mut state) = self.lock_state() {
+            *state = OverlayState::Hidden;
+        }
         log::info!("hide_for_paste: outcome={:?}", outcome);
         outcome
     }
 
     /// 降级时重新展示剪贴板面板（不重新 capture，保留 prev_window）
     pub fn resume_clipboard(&self, window: &WebviewWindow) -> Result<(), AppError> {
-        {
-            let mut state = self
-                .state
-                .lock()
-                .map_err(|_| AppError::Internal("lock poisoned".into()))?;
-            *state = OverlayState::Shown;
+        let mut state = self.lock_state()?;
+        if *state != OverlayState::Hidden {
+            return Ok(());
         }
+
+        // 先显示窗口，再恢复点击事件
+        // 顺序很重要：先显示避免穿透状态闪烁
+        window.show()?;
+        if let Err(e) = window.set_ignore_cursor_events(false) {
+            log::warn!(
+                "resume_clipboard: set_ignore_cursor_events(false) failed: {}",
+                e
+            );
+        }
+        let _ = window.set_focus();
+        self.revision.fetch_add(1, Ordering::Relaxed);
+        *state = OverlayState::Shown;
         *self
             .current_mode
             .lock()
             .map_err(|_| AppError::Internal("lock poisoned".into()))? =
             Some(OverlayMode::Clipboard);
-
-        window.show()?;
-        let _ = window.set_focus();
         let _ = window.emit("overlay://shown", "clipboard");
         Ok(())
     }
@@ -569,28 +495,8 @@ impl OverlayManager {
         Ok(())
     }
 
-    pub fn on_blur(&self, window: &WebviewWindow) -> Result<(), AppError> {
-        let hide_on_blur = self
-            .hide_on_blur
-            .lock()
-            .map_err(|_| AppError::Internal("lock poisoned".into()))?;
-        if !*hide_on_blur {
-            log::info!("on_blur: hide_on_blur is disabled, skipping");
-            return Ok(());
-        }
-
-        let state = self
-            .state
-            .lock()
-            .map_err(|_| AppError::Internal("lock poisoned".into()))?;
-        if !should_hide_on_blur(*state) {
-            log::info!("on_blur: state is {:?}, hidden/hiding, skipping", *state);
-            return Ok(());
-        }
-        drop(state);
-
-        log::info!("on_blur: calling hide with Blur reason");
-        self.hide(window, HideReason::Blur)
+    pub fn on_blur(&self, window: &WebviewWindow, revision: u64) -> Result<(), AppError> {
+        self.hide_if_current(window, HideReason::Blur, Some(revision))
     }
 
     pub fn set_hide_on_blur(&self, value: bool) {
@@ -636,6 +542,14 @@ impl OverlayManager {
             .map(|mode| *mode == Some(OverlayMode::Convert))
             .unwrap_or(false)
     }
+}
+
+fn hide_overlay_window(window: &WebviewWindow) -> Result<(), AppError> {
+    window.hide()?;
+    if let Err(error) = window.set_ignore_cursor_events(true) {
+        log::warn!("overlay: could not enable click-through: {}", error);
+    }
+    Ok(())
 }
 
 /// 浮层标准尺寸
@@ -740,6 +654,18 @@ mod tests {
         let manager = OverlayManager::new();
         assert_eq!(manager.get_state(), OverlayState::Hidden);
         assert_eq!(manager.get_mode(), None);
+    }
+
+    #[test]
+    fn 再次隐藏后旧的划词结果仍然失效() {
+        let manager = OverlayManager::new();
+        let (state, revision) = manager.hotkey_snapshot().unwrap();
+        assert_eq!(state, OverlayState::Hidden);
+        assert!(manager.matches_revision(Some(revision)));
+        manager.revision.fetch_add(2, Ordering::Relaxed);
+        assert_eq!(manager.get_state(), OverlayState::Hidden);
+        assert!(!manager.matches_revision(Some(revision)));
+        assert!(manager.matches_revision(None));
     }
 
     #[test]

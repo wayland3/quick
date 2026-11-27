@@ -119,7 +119,7 @@
 
 ## 9. 划词兼容性
 
-划词读取优先使用 Windows UIA 或 Linux X11 PRIMARY。Windows 读取失败时，可通过「划词读取增强」（默认开）启用复制回退。Navicat 的 `TEEAutoCompleteMemo` 控件尝试接收 Windows 复制消息，其余情况使用 Ctrl+C。
+划词读取优先使用 Windows UIA 或 Linux X11 PRIMARY。Windows 读取失败时，可通过「划词读取增强」（默认开）启用复制回退。Navicat 的文本编辑器 `TEEAutoCompleteMemo` 和表格单元格编辑器 `TNavicatInplaceEdit` 使用 Windows 复制消息。其他符合回退条件的控件使用 Ctrl+C。
 
 无障碍读取能否成功，由目标应用是否向系统辅助功能暴露选区决定：
 

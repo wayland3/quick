@@ -5,6 +5,7 @@
   "windows": ["overlay", "settings", "json-detail"],
   "permissions": [
     "core:default",
+    "core:window:allow-set-ignore-cursor-events",
     "global-shortcut:default",
     "autostart:default",
     "opener:default",

@@ -44,10 +44,12 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), AppError> {
                 ..
             } = event
             {
-                let app = tray.app_handle();
-                if let Err(e) = show_overlay(app, "launcher") {
-                    log::warn!("tray click handler failed: {}", e);
-                }
+                let app = tray.app_handle().clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    if let Err(e) = show_overlay(&app, "launcher") {
+                        log::warn!("tray click handler failed: {}", e);
+                    }
+                });
             }
         })
         .build(app)?;
@@ -60,7 +62,7 @@ fn show_overlay(app: &AppHandle, mode: &str) -> Result<(), AppError> {
     if let Some(webview_window) = app.get_webview_window("overlay") {
         let overlay_manager = app.state::<OverlayManager>();
         if let Some(overlay_mode) = OverlayMode::from_str(mode) {
-            overlay_manager.show_webview(&webview_window, overlay_mode)?;
+            overlay_manager.show(&webview_window, overlay_mode)?;
         }
     }
     Ok(())

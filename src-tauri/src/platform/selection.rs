@@ -6,7 +6,7 @@
 // - macOS: 预留（v2 用 Accessibility API）
 //
 // WM_COPY 回退在 services/selection.rs 的 fallback 模块中实现，
-// 用于处理不响应 Ctrl+C 的自绘控件（如 Navicat 的 TEEAutoCompleteMemo）。
+// 用于处理不响应 Ctrl+C 的 Navicat 文本与表格编辑控件。
 
 use std::time::{Duration, Instant};
 
@@ -247,6 +247,33 @@ mod windows_impl {
         thread: u32,
     }
 
+    fn is_navicat_message_copy_target(process: &str, class: &str) -> bool {
+        process.eq_ignore_ascii_case("navicat.exe")
+            && matches!(class, "TEEAutoCompleteMemo" | "TNavicatInplaceEdit")
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn 仅对指定的文本和表格编辑控件使用复制消息() {
+        assert!(is_navicat_message_copy_target(
+            "navicat.exe",
+            "TEEAutoCompleteMemo"
+        ));
+        assert!(is_navicat_message_copy_target(
+            "NAVICAT.EXE",
+            "TNavicatInplaceEdit"
+        ));
+        assert!(!is_navicat_message_copy_target(
+            "navicat.exe",
+            "TNavicatInplaceEditOther"
+        ));
+        assert!(!is_navicat_message_copy_target("navicat.exe", ""));
+        assert!(!is_navicat_message_copy_target(
+            "other.exe",
+            "TNavicatInplaceEdit"
+        ));
+    }
+
     impl FocusedCopyTarget {
         pub(crate) fn pid(self) -> u32 {
             self.pid
@@ -260,13 +287,14 @@ mod windows_impl {
             use windows::Win32::Foundation::HWND;
             use windows::Win32::UI::WindowsAndMessaging::GetClassNameW;
 
-            if !process.eq_ignore_ascii_case("navicat.exe") {
-                return false;
-            }
             let mut class = [0; 64];
             // SAFETY: 输出缓冲区在调用期间有效，失效句柄返回 0。
             let len = unsafe { GetClassNameW(HWND(self.child as *mut _), &mut class) };
-            len > 0 && String::from_utf16_lossy(&class[..len as usize]) == "TEEAutoCompleteMemo"
+            len > 0
+                && is_navicat_message_copy_target(
+                    process,
+                    &String::from_utf16_lossy(&class[..len as usize]),
+                )
         }
 
         pub(crate) fn capture(top: isize, pid: u32) -> Option<Self> {

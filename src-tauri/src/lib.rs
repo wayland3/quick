@@ -24,11 +24,14 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(window) = app.get_webview_window("overlay") {
-                let _ = window.emit("overlay://show", "launcher");
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
+            let app = app.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                if let Some(window) = app.get_webview_window("overlay") {
+                    if let Err(error) = app.state::<OverlayManager>().reveal_launcher(&window) {
+                        log::warn!("single-instance overlay show failed: {}", error);
+                    }
+                }
+            });
         }))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
@@ -99,6 +102,7 @@ pub fn run() {
                 && matches!(event, tauri::WindowEvent::Focused(false))
             {
                 let app = window.app_handle().clone();
+                let revision = app.state::<OverlayManager>().revision();
                 std::thread::spawn(move || {
                     std::thread::sleep(std::time::Duration::from_millis(80));
                     let overlay = app.get_webview_window("overlay");
@@ -121,11 +125,9 @@ pub fn run() {
                             external_foreground,
                         ) {
                             let manager = app.state::<OverlayManager>();
-                            if let Err(error) = manager.on_blur(&webview) {
+                            if let Err(error) = manager.on_blur(&webview, revision) {
                                 log::warn!("overlay blur hide failed: {}", error);
                             }
-                            // 详情的失焦策略独立于主浮层状态和全局 hide_on_blur。
-                            services::jsondetail::hide_detail_window(&app, true);
                         }
                     }
                 });

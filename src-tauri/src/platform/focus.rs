@@ -102,53 +102,6 @@ pub fn current_process_elevated() -> bool {
     }
 }
 
-/// 显示窗口但不激活（不抢焦点）
-///
-/// Windows: `ShowWindow(SW_SHOWNA)`，窗口可见但前台窗口不变，
-/// 保证 UIA `GetFocusedElement()` 仍返回原应用（划词读取不受影响）。
-/// Linux: X11 没有等价的「显示不激活」语义，退化为普通显示。
-pub fn show_no_activate(
-    physical_left: i32,
-    physical_top: i32,
-    physical_width: u32,
-    physical_height: u32,
-    hwnd: isize,
-) {
-    #[cfg(target_os = "windows")]
-    {
-        use windows::Win32::Foundation::HWND;
-        use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWNA};
-        let _ = (physical_left, physical_top, physical_width, physical_height);
-        let _ = unsafe { ShowWindow(HWND(hwnd as _), SW_SHOWNA) };
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = (
-            physical_left,
-            physical_top,
-            physical_width,
-            physical_height,
-            hwnd,
-        );
-    }
-}
-
-/// 激活窗口（设为前台 + 设焦点）
-///
-/// 用于划词读取完成后，把浮层从「可见但不抢焦点」提升为正式前台窗口。
-pub fn activate_window(hwnd: isize) {
-    #[cfg(target_os = "windows")]
-    {
-        use windows::Win32::Foundation::HWND;
-        use windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
-        let _ = unsafe { SetForegroundWindow(HWND(hwnd as _)) };
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = hwnd;
-    }
-}
-
 /// 恢复焦点到之前的窗口
 pub fn restore(prev: &ForegroundWindow, timeout_ms: u32) -> Result<(), AppError> {
     #[cfg(target_os = "windows")]

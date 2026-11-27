@@ -3,10 +3,11 @@
 
 use crate::error::AppError;
 use crate::services::selection::{SelectionPermit, SelectionSource};
+use crate::services::window::{OverlayManager, OverlayMode, OverlayState};
 use global_hotkey::GlobalHotKeyManager;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
@@ -82,24 +83,42 @@ pub struct HotkeyManager {
     selection_pending: Arc<AtomicBool>,
 }
 
-fn emit_selection(
-    app: &AppHandle,
-    action: HotkeyAction,
-    source: SelectionSource,
-    _permit: Arc<SelectionPermit>,
-) {
-    let text = crate::services::selection::capture_selected_text(app, source);
-    match (action, text) {
-        (HotkeyAction::Convert, text) => {
-            let _ = app.emit("convert://prefill", text.unwrap_or_default());
-        }
-        (HotkeyAction::Launcher, Some(text)) => {
-            let _ = app.emit("launcher://prefill", text);
-        }
-        _ => {
-            let _ = app.emit("hotkey://pressed", action.as_str());
-        }
+fn reads_selection(state: OverlayState, mode: OverlayMode) -> bool {
+    state == OverlayState::Hidden && mode != OverlayMode::Clipboard
+}
+
+#[test]
+fn 只有从隐藏打开划词面板才读取选区() {
+    assert!(reads_selection(OverlayState::Hidden, OverlayMode::Convert));
+    assert!(reads_selection(OverlayState::Hidden, OverlayMode::Launcher));
+    assert!(!reads_selection(
+        OverlayState::Hidden,
+        OverlayMode::Clipboard
+    ));
+    for state in [
+        OverlayState::Showing,
+        OverlayState::Shown,
+        OverlayState::Hiding,
+    ] {
+        assert!(!reads_selection(state, OverlayMode::Convert));
     }
+}
+
+fn dispatch_hotkey(app: &AppHandle, mode: OverlayMode) -> Result<(), AppError> {
+    let Some(window) = app.get_webview_window("overlay") else {
+        return Ok(());
+    };
+    let overlay = app.state::<OverlayManager>();
+    let (state, revision) = overlay.hotkey_snapshot()?;
+    if state == OverlayState::Hiding {
+        return Ok(());
+    }
+    let prefill = if reads_selection(state, mode) {
+        crate::services::selection::capture_selected_text(app, SelectionSource::capture())
+    } else {
+        None
+    };
+    overlay.show_from_hotkey(&window, mode, revision, prefill)
 }
 
 impl HotkeyManager {
@@ -144,76 +163,29 @@ impl HotkeyManager {
                         .ok()
                         .map(|s| s.contains(&action_clone))
                         .unwrap_or(false);
-                    if !is_suspended && !selection_pending.load(Ordering::Acquire) {
-                        // 浮层已显示同模式时直接切换隐藏，跳过划词读取。
-                        // 否则焦点在浮层上，UIA 读不到选区会等 500ms 超时，
-                        // 用户感知到明显的关闭延迟。
-                        let should_toggle = {
-                            let overlay =
-                                app_clone.state::<crate::services::window::OverlayManager>();
-                            let state = overlay.get_state();
-                            let mode = overlay.get_mode();
-                            state == crate::services::window::OverlayState::Shown
-                                && match action_clone {
-                                    HotkeyAction::Convert => {
-                                        mode == Some(crate::services::window::OverlayMode::Convert)
-                                    }
-                                    HotkeyAction::Launcher => {
-                                        mode == Some(crate::services::window::OverlayMode::Launcher)
-                                    }
-                                    _ => false,
-                                }
-                        };
-
-                        if should_toggle || action_clone == HotkeyAction::Clipboard {
-                            // 同模式已显示：发通用事件，前端调 overlay_show 触发 toggle
-                            // 剪贴板面板不需要划词预填，走通用事件
-                            let _ = app_clone.emit("hotkey://pressed", action_clone.as_str());
-                        } else {
-                            // 立即显示浮层（被动：不抢焦点，让 UIA 在原应用读取选区）
-                            // 划词读取在后台线程并行进行，完成后发 prefill 事件
-                            {
-                                let overlay =
-                                    app_clone.state::<crate::services::window::OverlayManager>();
-                                if let Some(window) = app_clone.get_webview_window("overlay") {
-                                    let mode = match action_clone {
-                                        HotkeyAction::Convert => {
-                                            Some(crate::services::window::OverlayMode::Convert)
-                                        }
-                                        HotkeyAction::Launcher => {
-                                            Some(crate::services::window::OverlayMode::Launcher)
-                                        }
-                                        _ => None,
-                                    };
-                                    if let Some(mode) = mode {
-                                        let _ = overlay.show_passive(&window, mode);
-                                    }
-                                }
+                    if is_suspended {
+                        return;
+                    }
+                    let Some(permit) = SelectionPermit::acquire(&selection_pending) else {
+                        return;
+                    };
+                    let mode = match action_clone {
+                        HotkeyAction::Launcher => OverlayMode::Launcher,
+                        HotkeyAction::Clipboard => OverlayMode::Clipboard,
+                        HotkeyAction::Convert => OverlayMode::Convert,
+                    };
+                    let worker_app = app_clone.clone();
+                    // 界面线程必须继续处理窗口和剪贴板消息。
+                    if let Err(error) = std::thread::Builder::new()
+                        .name("quick-hotkey".into())
+                        .spawn(move || {
+                            let _permit = permit;
+                            if let Err(error) = dispatch_hotkey(&worker_app, mode) {
+                                log::warn!("overlay hotkey {:?} failed: {}", mode, error);
                             }
-
-                            let Some(permit) = SelectionPermit::acquire(&selection_pending) else {
-                                return;
-                            };
-                            let source = SelectionSource::capture();
-                            let worker_app = app_clone.clone();
-                            // Windows 窗口句柄及剪贴板所有者消息需要主循环继续运行。
-                            if let Err(error) = std::thread::Builder::new()
-                                .name("quick-selection".into())
-                                .spawn(move || {
-                                    emit_selection(&worker_app, action_clone, source, permit);
-                                    // 划词读取完成，激活浮层为正式前台窗口
-                                    if let Some(window) = worker_app.get_webview_window("overlay") {
-                                        let overlay = worker_app
-                                            .state::<crate::services::window::OverlayManager>(
-                                        );
-                                        overlay.activate(&window);
-                                    }
-                                })
-                            {
-                                log::warn!("[selection] could not start hotkey worker: {}", error);
-                                let _ = app_clone.emit("hotkey://pressed", action_clone.as_str());
-                            }
-                        }
+                        })
+                    {
+                        log::warn!("could not start hotkey worker: {}", error);
                     }
                 }
             }
