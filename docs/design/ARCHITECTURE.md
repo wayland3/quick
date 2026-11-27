@@ -53,16 +53,12 @@
 - `code` 格式：`domain.specific_name`，全小写下划线（如 `clipboard.busy`、`hotkey.conflict`）
 - `internal` 类错误不暴露细节给前端，只记日志
 
-## 5. 功能设计索引
+## 5. 功能设计
 
-按产品功能拆开，细节在各文件：
-
-| 功能 | 设计文档 | 主要内容 |
-|------|---------|---------|
-| 全局约定 | `docs/design/features/global.md` | 热键注册/探测/暂停、浮层状态机、键盘与错误提示 |
-| 启动器 | `docs/design/features/launcher.md` | 查询与排序、内置命令分派、执行、索引刷新 |
-| 剪贴板 | `docs/design/features/clipboard.md` | 监听、入库去重、粘贴抑制与节流、粘贴流程、容量治理 |
-| 设置 | `docs/design/features/settings.md` | JSON 单条存储、patch 合并与校验、副作用、启动同步 |
-| 快速转换 | `docs/design/features/convert.md`（待写） | 划词读取、时间/MD5/JSON 转换、结果列表、时区列表设置 |
-
-跨功能内容留在本文：进程/线程模型（§2）、窗口属性（§3）、错误模型（§4）、数据库（`DATABASE.md`）、IPC（`IPC.md`）。检索打分与应用索引算法归启动器，见 `docs/design/features/launcher.md`。
+| 功能 | 设计文档 |
+|------|---------|
+| 全局约定 | `docs/design/features/global.md` |
+| 启动器 | `docs/design/features/launcher.md` |
+| 剪贴板 | `docs/design/features/clipboard.md` |
+| 设置 | `docs/design/features/settings.md` |
+| 快速转换 | `docs/design/features/convert.md` |
