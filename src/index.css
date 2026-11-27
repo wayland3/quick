@@ -585,6 +585,27 @@ code,
   color: var(--text-faint);
 }
 
+.qw-json-detail-close {
+  margin-left: auto;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.qw-json-detail-close:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
 /* JSON 树结构 */
 .qw-json-view {
   white-space: pre-wrap;

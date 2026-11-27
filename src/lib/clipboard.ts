@@ -84,6 +84,10 @@ export interface Settings {
   search_enabled: boolean;
   launcher_app_limit: number;
   search_engines: SearchEngine[];
+  /** 划词读取 UIA 失败后用 Ctrl+C 回退（钉钉等自绘控件应用需要） */
+  selection_copy_fallback: boolean;
+  /** JSON 详情窗口失焦时自动关闭 */
+  json_detail_close_on_blur: boolean;
 }
 
 /** 搜索引擎配置 */

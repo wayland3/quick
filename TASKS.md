@@ -2,6 +2,103 @@
 
 ## 进行中
 
+### 划词读取 Ctrl+C / WM_COPY 回退（钉钉、Navicat 等自绘控件应用）
+
+**状态**：🚧 Navicat 划词预填与剪贴板文本还原已真机验证，其余应用回归待手测
+
+**需求文档**：`docs/product/features/convert.md` §9
+
+**设计文档**：`docs/design/features/convert.md` §4.4-4.6
+
+**mini-design 评审**：`docs/reviews/selection-ctrlc-design.md`（第 1 轮 FAIL：seal 契约 / 超时语义 / paste 并发 3 个 BLOCKER；第 2 轮修掉迟到探针回滚外部真实写入的数据丢失残余）
+
+**背景**：
+- 2026-11-26 日志确认钉钉（`im_chat::ChatBubbleWidget` 自绘控件）不向 UIA 暴露选区，纯 UIA 无路径。用户决议推翻 2026-11-25「不做任何回退」，改为可选 Ctrl+C 回退。
+- 2026-11-27 日志显示 Navicat 的 `TEEAutoCompleteMemo` 未读到 UIA 文本，模拟 Ctrl+C 超时。前两版发送 `WM_COPY` 时目标均为顶层窗口。
+
+**已做**：
+
+1. [x] mini-design + 评审 2 轮：
+   - 第 1 轮（FAIL）3 BLOCKER：seal 契约（seq_after 还原后读 + 回读同管线 hash + 中间态 add_hash）、超时语义（迟到复查线程 + join 900ms + abandoned 标记）、paste 并发（paste_guard + 序列号/前台双重复查）——全部修复
+   - 第 2 轮：迟到探针加前台进程校验（漂移 → 不碰剪贴板，避免回滚用户真实复制）；同窗口外部写入（PrtScn 等）无法区分列入残余风险
+2. [x] `platform/clipboard.rs`：快照 / 还原 / 序列号等待 / 纯文本读取（Windows 实现 + Linux 桩 + 单测）
+3. [x] `services/selection.rs`：回退编排 + 终端黑名单 + VS Code 家族内嵌终端宿主黑名单 + 单测
+4. [x] `services/clipboard.rs`：PasteSuppression 回退契约 4 项单测
+5. [x] `services/hotkey.rs`：传入 AppHandle
+6. [x] `models.rs`：`Settings.selection_copy_fallback`（默认开）+ 旧 JSON 兼容测试
+7. [x] 前端：设置页「划词读取增强」开关 + 说明文案更新 + 契约同步 + 测试
+8. [x] 文档：convert / settings / launcher 产品与设计文档同步（含隐私披露与整行复制语义）
+9. [x] `npm.cmd run verify` 全绿（前端 124；Rust 263 + 4 忽略）
+10. [x] 设计评审第 2 轮（迟到探针修复，评审确认转 PASS）
+11. [x] **Navicat WM_COPY 回退**（2026-11-27）：改用 `GetGUIThreadInfo`，仅 Navicat 的 `TEEAutoCompleteMemo` 走消息复制，沿用选区回退设置。设计见 `docs/reviews/navicat-selection-focus.md`。
+12. [ ] 真机手测（清单见下）
+
+Navicat 改动的 `npm.cmd run verify` 通过，前端 128 项、Rust 273 项通过，4 项既有真机测试跳过。独立复评通过，见 `docs/reviews/navicat-selection-focus.md`。
+
+Navicat 真机日志显示 `WM_COPY` 原先晚于热键等待超时。划词改为在后台执行，派发与迟到剪贴板清理分别串行化。独立复评通过，见 `docs/reviews/navicat-selection-focus.md`。新版真机按 `Alt+Q` 后在 62ms 内取得选区，确认转换输入框预填及原剪贴板文本一致。`npm.cmd run verify` 通过，前端 128 项、Rust 274 项通过，4 项既有真机测试跳过。
+
+**真机手测清单**：
+- 钉钉聊天选中文字 → 划词热键 → 预填成功；Ctrl+V 到别处验证剪贴板已还原
+- [x] Navicat 的 `TEEAutoCompleteMemo` 选中文字 → `Alt+Q` → 转换输入框预填 → 原剪贴板文本一致
+- 复制一张图片 → 在钉钉里划词 → 预填成功且图片仍可粘贴（CF_DIB 保真）
+- Windows Terminal 内选中 → 热键 → 日志确认「fallback skipped: terminal-like process」
+- VS Code 集成终端焦点 → 热键 → 日志确认 IDE 宿主跳过（不发 Ctrl+C）
+- 划词期间剪贴板历史无临时条目
+- 设置关掉「划词读取增强」→ 钉钉/Navicat 划词回到未选中降级
+
+### JSON 详情窗口独立性
+
+**状态**：✅ 完成
+
+**需求文档**：`docs/product/features/convert.md` §5.1  
+**设计文档**：`docs/design/features/convert.md` §10  
+**mini-design**：`docs/reviews/json-detail-independence-design.md`
+
+**背景**：用户反馈 JSON 转换结果点击空白后丢失，需要主动关闭页面。
+
+**已做**：
+
+1. [x] `src/windows/JsonDetailPanel.tsx`：移除 `overlay://hidden` 监听，加 `onFocusChanged` 监听（失焦时隐藏自己），标题栏加关闭按钮（×）
+2. [x] `src/index.css`：加关闭按钮样式
+3. [x] `src/windows/JsonDetailPanel.test.tsx`：更新 mock + 加关闭按钮测试
+4. [x] 文档：convert 产品文档 §5.1 + 设计文档 §10
+5. [x] `npm.cmd run verify` 全绿（前端 125；Rust 263 + 4 忽略）
+
+**行为**：
+- 主浮层失焦隐藏时，详情窗口保留
+- 详情窗口失焦时隐藏自己
+- 标题栏有关闭按钮（×）供用户主动关闭
+
+**失焦开关回归修复（2026-11-26）**：原先详情仍监听 `overlay://hidden`，且 `ConvertPanel` 卸载时无条件发隐藏命令，绕过设置；失焦焦点判断统一到后端双窗口复查。关闭 `json_detail_close_on_blur` 时，点击外部不隐藏详情，主动关闭/切换结果仍隐藏。显示/隐藏增加串行化与模式状态校验，避免迟到显示越过关闭。`npm.cmd run verify` 通过（前端 127、Rust 267 通过；4 项既有真机测试跳过）；真机窗口交互待验收。
+**修复设计与评审**：`docs/reviews/json-detail-close-on-blur-fix.md`；独立只读评审首轮 FAIL（迟到显示竞态），修复后复评 PASS。此条覆盖上面的旧行为记录：失焦是否隐藏详情现在由开关决定（默认开）。
+
+**关闭按钮回归修复（2026-11-26）**：按钮原本直接调用 `getCurrentWindow().hide()`，但 `core:window:default` 没有 `allow-hide` 权限；改为复用 `json_detail_hide` 命令并传入主动关闭标记，关闭与其他主动隐藏共享串行化和内容清理。后端隐藏失败会返回错误；手动关闭后拦截迟到展示，切换非 JSON 结果后可再次显示。补充点击、失败重试和状态门禁测试；`npm.cmd run verify` 全绿（前端 128、Rust 269 通过，4 项既有真机测试跳过）。桌面窗口交互仍待真机验收。
+**交叉评审**：独立只读评审首轮 FAIL（隐藏错误吞掉、迟到展示），修复后复评 PASS（L2，2 轮）；详见 `docs/reviews/json-detail-close-button-fix.md`。
+
+**纵向对齐调整（2026-11-26）**：JSON 详情窗口顶部优先与主浮层对齐，仅在底部放不下时上移；超过整个工作区时贴顶并内部滚动。布局单测覆盖常规/底部越界/多屏偏移/高 DPI；`npm.cmd run verify` 全绿（前端 128、Rust 272 通过，4 项既有真机测试跳过）。独立只读评审 PASS（L1，1 轮），详见 `docs/reviews/json-detail-vertical-alignment.md`；非整数 DPI 贴边或有约 1 像素取整偏差，窗口实际位置待真机验收。
+
+### JSON 转换跳过标量
+
+**状态**：✅ 完成
+
+**背景**：用户反馈输入纯数字（如 "123"）时，JSON 转换结果无意义。
+
+**已做**：
+
+1. [x] 修改 `src-tauri/src/commands/convert.rs` 的 `try_format_json` 函数
+   - 在三个解析路径（快路径、容错路径、提取路径）都加上 `is_object() || is_array()` 检查
+   - 只接受 object 或 array，跳过标量（数字、字符串、布尔值、null）
+2. [x] 添加测试
+   - `json跳过标量数字`：验证 123、123.45、-42 返回 None
+   - `json跳过标量字符串和布尔值`：验证 "hello"、true、false、null 返回 None
+   - `json接受object和array`：验证 {}、[]、{"a":1}、[1,2,3] 返回 Some
+3. [x] 验证：`npm.cmd run verify` 全绿（前端 125；Rust 266 + 4 忽略）
+
+**行为**：
+- 输入 "123" → 不作为 JSON 结果
+- 输入 '{"a":1}' → 正常格式化
+- 输入 '[1,2,3]' → 正常格式化
+
 ### 启动器设置增强
 
 **状态**：✅ 完成

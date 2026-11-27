@@ -5,8 +5,8 @@
 // - Linux: X11 PRIMARY 选区，带超时
 // - macOS: 预留（v2 用 Accessibility API）
 //
-// 明确不做：模拟 Ctrl+C / WM_COPY 回退。该方案会污染剪贴板、破坏非文本格式、
-// 触发自身剪贴板监听，并向终端发送 SIGINT；读取失败时返回 None 由上层降级。
+// WM_COPY 回退在 services/selection.rs 的 fallback 模块中实现，
+// 用于处理不响应 Ctrl+C 的自绘控件（如 Navicat 的 TEEAutoCompleteMemo）。
 
 use std::time::{Duration, Instant};
 
@@ -37,8 +37,8 @@ pub fn read_selected_text() -> Option<String> {
 /// 带超时的 thread join（平台实现共用）
 ///
 /// UIA / X11 调用都可能被目标应用卡住；统一在平台层兜底，避免把超时逻辑
-/// 散落到业务层。
-fn join_with_timeout<T: Send + 'static>(
+/// 散落到业务层。超时返回 Err，线程继续在后台运行（由调用方决定语义）。
+pub(crate) fn join_with_timeout<T: Send + 'static>(
     handle: std::thread::JoinHandle<T>,
     timeout: Duration,
 ) -> Result<T, ()> {
@@ -53,6 +53,9 @@ fn join_with_timeout<T: Send + 'static>(
         std::thread::sleep(Duration::from_millis(10));
     }
 }
+
+#[cfg(target_os = "windows")]
+pub(crate) use windows_impl::FocusedCopyTarget;
 
 #[cfg(target_os = "windows")]
 mod windows_impl {
@@ -224,21 +227,140 @@ mod windows_impl {
             .CurrentClassName()
             .map(|value| value.to_string())
             .unwrap_or_default();
-        let name = element
-            .CurrentName()
-            .map(|value| value.to_string())
-            .unwrap_or_default();
         let control_type = element
             .CurrentControlType()
             .map(|value| value.0)
             .unwrap_or(0);
         log::info!(
-            "[selection] focused: pid={} class='{}' name='{}' control_type={}",
+            "[selection] focused: pid={} class='{}' control_type={}",
             pid,
             class,
-            name,
             control_type
         );
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct FocusedCopyTarget {
+        top: isize,
+        child: isize,
+        pid: u32,
+        thread: u32,
+    }
+
+    impl FocusedCopyTarget {
+        pub(crate) fn pid(self) -> u32 {
+            self.pid
+        }
+
+        pub(crate) fn is_current(self) -> bool {
+            self.matches(Self::capture(self.top, self.pid))
+        }
+
+        pub(crate) fn supports_message_copy(self, process: &str) -> bool {
+            use windows::Win32::Foundation::HWND;
+            use windows::Win32::UI::WindowsAndMessaging::GetClassNameW;
+
+            if !process.eq_ignore_ascii_case("navicat.exe") {
+                return false;
+            }
+            let mut class = [0; 64];
+            // SAFETY: 输出缓冲区在调用期间有效，失效句柄返回 0。
+            let len = unsafe { GetClassNameW(HWND(self.child as *mut _), &mut class) };
+            len > 0 && String::from_utf16_lossy(&class[..len as usize]) == "TEEAutoCompleteMemo"
+        }
+
+        pub(crate) fn capture(top: isize, pid: u32) -> Option<Self> {
+            use windows::Win32::UI::WindowsAndMessaging::{
+                GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId, IsChild,
+                GUITHREADINFO,
+            };
+
+            // SAFETY: 窗口句柄由系统返回，输出缓冲区在同步调用期间有效。
+            unsafe {
+                let foreground = GetForegroundWindow();
+                if foreground.is_invalid() || foreground.0 as isize != top {
+                    return None;
+                }
+                let mut actual_pid = 0;
+                let thread = GetWindowThreadProcessId(foreground, Some(&mut actual_pid));
+                if thread == 0 || actual_pid != pid {
+                    return None;
+                }
+                let mut info = GUITHREADINFO {
+                    cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
+                    ..Default::default()
+                };
+                GetGUIThreadInfo(thread, &mut info).ok()?;
+                if info.hwndFocus.is_invalid() || !IsChild(foreground, info.hwndFocus).as_bool() {
+                    return None;
+                }
+                let mut child_pid = 0;
+                let child_thread = GetWindowThreadProcessId(info.hwndFocus, Some(&mut child_pid));
+                if child_thread != thread || child_pid != pid || GetForegroundWindow() != foreground
+                {
+                    return None;
+                }
+                Some(Self {
+                    top,
+                    child: info.hwndFocus.0 as isize,
+                    pid,
+                    thread,
+                })
+            }
+        }
+
+        /// Ok(false) 表示复查拒绝发送。Ok(true) 表示窗口处理完消息。
+        pub(crate) fn send_if_current(self, ready: impl FnOnce() -> bool) -> Result<bool, String> {
+            use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+            use windows::Win32::UI::WindowsAndMessaging::{
+                SendMessageTimeoutW, SMTO_ABORTIFHUNG, SMTO_BLOCK, SMTO_ERRORONEXIT, WM_COPY,
+            };
+
+            if !self.is_current() || !ready() {
+                return Ok(false);
+            }
+
+            // SAFETY: 句柄经过复查；WM_COPY 的参数为零，没有跨进程指针。
+            let sent = unsafe {
+                SendMessageTimeoutW(
+                    HWND(self.child as *mut _),
+                    WM_COPY,
+                    WPARAM(0),
+                    LPARAM(0),
+                    SMTO_ABORTIFHUNG | SMTO_BLOCK | SMTO_ERRORONEXIT,
+                    100,
+                    None,
+                )
+            };
+            if sent.0 == 0 {
+                return Err(windows::core::Error::from_thread().to_string());
+            }
+            log::info!("[selection] WM_COPY processed by focused child");
+            Ok(true)
+        }
+
+        pub(crate) fn matches(self, focused: Option<Self>) -> bool {
+            focused == Some(self)
+        }
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn 只允许向原焦点子控件发送复制消息() {
+        let target = FocusedCopyTarget {
+            top: 10,
+            child: 11,
+            pid: 20,
+            thread: 30,
+        };
+        assert!(target.matches(Some(target)));
+        assert!(!target.matches(None));
+        assert!(!target.matches(Some(FocusedCopyTarget {
+            child: 12,
+            ..target
+        })));
+        assert!(!target.matches(Some(FocusedCopyTarget { top: 13, ..target })));
+        assert!(!target.matches(Some(FocusedCopyTarget { pid: 21, ..target })));
     }
 }
 

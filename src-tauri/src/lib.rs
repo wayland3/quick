@@ -88,6 +88,7 @@ pub fn run() {
         ])
         .manage(OverlayManager::new())
         .manage(services::jsondetail::DetailContent::default())
+        .manage(services::jsondetail::DetailVisibilityGate::default())
         .manage(HotkeyManager::new())
         .manage(services::paste::PasteOptions::new())
         .manage(services::appindex::IndexRebuildLock::default())
@@ -123,6 +124,8 @@ pub fn run() {
                             if let Err(error) = manager.on_blur(&webview) {
                                 log::warn!("overlay blur hide failed: {}", error);
                             }
+                            // 详情的失焦策略独立于主浮层状态和全局 hide_on_blur。
+                            services::jsondetail::hide_detail_window(&app, true);
                         }
                     }
                 });

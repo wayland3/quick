@@ -1,7 +1,7 @@
 // JSON 详情独立窗口
 //
 // JSON 详情是**独立于浮层的第二个窗口**：浮层宽度恒定，左侧结果列表尺寸不受影响；
-// 详情窗口独立定位、独立拖拽，浮层隐藏时一并隐藏。
+// 详情窗口独立定位、独立拖拽，失焦时按设置决定是否隐藏。
 
 use crate::error::AppError;
 use crate::platform::focus::{get_monitor_at, WorkArea};
@@ -23,6 +23,27 @@ const DETAIL_MAX_WIDTH: f64 = 840.0;
 #[derive(Default)]
 pub struct DetailContent(pub Mutex<Option<String>>);
 
+/// 串行化详情窗口的显示与隐藏，防止迟到的显示覆盖主动关闭。
+#[derive(Default)]
+pub struct DetailVisibilityGate(pub Mutex<DetailVisibilityState>);
+
+#[derive(Default)]
+pub struct DetailVisibilityState {
+    dismissed: bool,
+}
+
+impl DetailVisibilityState {
+    pub fn can_show(&self) -> bool {
+        !self.dismissed
+    }
+
+    fn record_hide(&mut self, check_setting: bool, dismiss: bool) {
+        if !check_setting {
+            self.dismissed = dismiss;
+        }
+    }
+}
+
 /// 详情窗口的布局输入
 #[derive(Debug, Clone, Copy)]
 pub struct DetailLayoutInput {
@@ -42,10 +63,11 @@ pub struct DetailLayoutInput {
 /// 计算详情窗口的尺寸与位置（纯函数）
 ///
 /// - 优先在主面板右侧利用可用宽度，必要时回退到左侧或重叠
-/// - 短内容在工作区居中，超高内容从工作区顶部开始滚动
+/// - 顶部优先对齐主面板；底部越界时上移，超高内容从工作区顶部滚动
 pub fn compute_detail_layout(input: DetailLayoutInput) -> (i32, i32, u32, u32) {
     let DetailLayoutInput {
         overlay_x,
+        overlay_y,
         overlay_width,
         content_height,
         content_width,
@@ -82,11 +104,8 @@ pub fn compute_detail_layout(input: DetailLayoutInput) -> (i32, i32, u32, u32) {
         (left + (logical_work_width - width) / 2.0, width)
     };
 
-    let y = if height >= max_height {
-        top as i32
-    } else {
-        (top + (logical_work_height - height as f64) / 2.0) as i32
-    };
+    let bottom_aligned_y = (top + logical_work_height - height as f64).max(top);
+    let y = (overlay_y as f64).clamp(top, bottom_aligned_y) as i32;
 
     (x as i32, y, width as u32, height)
 }
@@ -118,15 +137,58 @@ pub fn ensure_detail_window(app: &tauri::AppHandle) -> Result<WebviewWindow, App
 }
 
 /// 隐藏详情窗口
-pub fn hide_detail_window(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window(DETAIL_WINDOW_LABEL) {
-        let _ = window.hide();
+///
+/// `check_setting` 为 true 表示自动失焦隐藏，按设置判断；
+/// false 表示明确关闭，不受失焦设置影响。
+pub fn hide_detail_window(app: &tauri::AppHandle, check_setting: bool) {
+    if let Err(error) = hide_detail_window_inner(app, check_setting, false) {
+        log::warn!("json detail hide failed: {}", error);
     }
-    if let Some(content) = app.try_state::<DetailContent>() {
-        if let Ok(mut stored) = content.0.lock() {
-            *stored = None;
+}
+
+/// 标记为用户主动关闭；隐藏失败时不改变关闭状态，供前端提示重试。
+pub fn dismiss_detail_window(app: &tauri::AppHandle) -> Result<(), AppError> {
+    hide_detail_window_inner(app, false, true)
+}
+
+fn hide_detail_window_inner(
+    app: &tauri::AppHandle,
+    check_setting: bool,
+    dismiss: bool,
+) -> Result<(), AppError> {
+    let gate = app.state::<DetailVisibilityGate>();
+    let mut guard = gate
+        .0
+        .lock()
+        .map_err(|_| AppError::Internal("detail visibility gate poisoned".into()))?;
+
+    if check_setting {
+        // 检查设置
+        if let Some(path) = app.try_state::<crate::services::storage::DbPath>() {
+            if let Ok(storage) =
+                crate::services::storage::ClipboardStorage::open_readonly_at(path.as_path())
+            {
+                let settings = storage.load_settings();
+                if !settings.json_detail_close_on_blur {
+                    log::info!("json detail blur hide skipped by setting");
+                    return Ok(());
+                }
+            }
         }
     }
+
+    if let Some(window) = app.get_webview_window(DETAIL_WINDOW_LABEL) {
+        window.hide()?;
+    }
+    if let Some(content) = app.try_state::<DetailContent>() {
+        *content
+            .0
+            .lock()
+            .map_err(|_| AppError::Internal("detail content lock poisoned".into()))? = None;
+    }
+    guard.record_hide(check_setting, dismiss);
+    log::info!("json detail hidden: dismiss={}", dismiss);
+    Ok(())
 }
 
 /// 展示详情窗口：按内容高度调整尺寸，贴在浮层右侧
@@ -225,6 +287,24 @@ pub fn move_detail_window(app: &tauri::AppHandle, dx: i32, dy: i32) -> Result<()
 mod tests {
     use super::*;
 
+    #[test]
+    fn 手动关闭阻止迟到的展示直到结果切换() {
+        let mut state = DetailVisibilityState::default();
+        assert!(state.can_show());
+        state.record_hide(false, true);
+        assert!(!state.can_show());
+        state.record_hide(false, false);
+        assert!(state.can_show());
+    }
+
+    #[test]
+    fn 失焦隐藏不解除手动关闭状态() {
+        let mut state = DetailVisibilityState::default();
+        state.record_hide(false, true);
+        state.record_hide(true, false);
+        assert!(!state.can_show());
+    }
+
     /// 1.0 缩放的工作区
     fn work(width: i32, height: i32) -> WorkArea {
         WorkArea {
@@ -250,9 +330,36 @@ mod tests {
     }
 
     #[test]
-    fn 短内容详情在工作区垂直居中() {
-        let (_, y, _, h) = compute_detail_layout(input(300, work(1920, 1080)));
-        assert_eq!(y, (1080 - h as i32) / 2);
+    fn 短内容详情顶部与主浮层对齐() {
+        let (_, y, _, _) = compute_detail_layout(input(300, work(1920, 1080)));
+        assert_eq!(y, 200);
+    }
+
+    #[test]
+    fn 主浮层靠下但详情仍放得下时不移动() {
+        let mut layout = input(300, work(1920, 1080));
+        layout.overlay_y = 700;
+        let (_, y, _, _) = compute_detail_layout(layout);
+        assert_eq!(y, 700);
+    }
+
+    #[test]
+    fn 详情底部越界时只向上移动到刚好放下() {
+        let mut layout = input(300, work(1920, 1080));
+        layout.overlay_y = 900;
+        let (_, y, _, h) = compute_detail_layout(layout);
+        assert_eq!(y, 1080 - h as i32);
+        assert_eq!(h, 324);
+    }
+
+    #[test]
+    fn 主浮层位于工作区上方时详情不越过顶部() {
+        let mut area = work(1920, 1040);
+        area.top = 40;
+        let mut layout = input(300, area);
+        layout.overlay_y = 10;
+        let (_, y, _, _) = compute_detail_layout(layout);
+        assert_eq!(y, 40);
     }
 
     #[test]
@@ -278,10 +385,11 @@ mod tests {
         area.top = 40;
         let mut layout = input(300, area);
         layout.overlay_x = 2560;
+        layout.overlay_y = 500;
         let (x, y, w, _) = compute_detail_layout(layout);
         assert_eq!(x, 3200);
         assert_eq!(w, 620);
-        assert!(y > 40);
+        assert_eq!(y, 500);
     }
 
     #[test]
@@ -295,10 +403,11 @@ mod tests {
         };
         let mut layout = input(300, area);
         layout.overlay_x = 2560;
+        layout.overlay_y = 120;
         let (x, y, w, _) = compute_detail_layout(layout);
         assert_eq!(x, 3200);
         assert_eq!(w, 620);
-        assert!(y > 40);
+        assert_eq!(y, 120);
     }
 
     #[test]

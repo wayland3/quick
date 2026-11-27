@@ -119,6 +119,110 @@ pub fn write_clipboard_content(content: &ClipboardContent) -> Result<(), AppErro
     }
 }
 
+/// 剪贴板快照（划词 Ctrl+C 回退用）
+///
+/// 只包含 HGLOBAL 语义的格式（文本 / HTML / RTF / DIB / 文件列表 / 注册格式）；
+/// GDI 句柄类格式（CF_BITMAP 等）无法按字节拷贝，跳过并计数。`formats` 为空
+/// 表示快照时刻剪贴板为空，还原等价于清空。
+#[derive(Debug, Default)]
+pub struct ClipboardSnapshot {
+    /// (格式 ID, 字节副本) 列表
+    formats: Vec<(u32, Vec<u8>)>,
+    /// 句柄语义跳过的格式数（只记数量，不记内容）
+    skipped_handle_formats: usize,
+}
+
+impl ClipboardSnapshot {
+    /// 快照总字节数
+    pub fn total_bytes(&self) -> usize {
+        self.formats.iter().map(|(_, bytes)| bytes.len()).sum()
+    }
+
+    /// 是否包含文本格式（用于抑制 hash 兜底）
+    #[cfg(target_os = "windows")]
+    pub fn unicode_text(&self) -> Option<String> {
+        const CF_UNICODETEXT: u32 = 13;
+        let (_, bytes) = self
+            .formats
+            .iter()
+            .find(|(fmt, _)| *fmt == CF_UNICODETEXT)?;
+        let units: Vec<u16> = bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&[lo, hi]| u16::from_le_bytes([lo, hi]))
+            .take_while(|&unit| unit != 0)
+            .collect();
+        Some(String::from_utf16_lossy(&units))
+    }
+}
+
+/// 快照字节上限：超过则放弃回退（划词临时操作不值得复制超大剪贴板）
+const SNAPSHOT_MAX_BYTES: usize = 32 * 1024 * 1024;
+
+/// 枚举并拷贝当前剪贴板的全部可还原格式
+///
+/// - Windows：逐格式 `GetClipboardData` 强制即时化（延迟渲染格式变立即数据），
+///   总量超 32MB 返回 `Ok(None)` 表示放弃
+/// - Linux：无实现（Ctrl+C 回退本身仅 Windows），返回 `Ok(None)`
+pub fn snapshot_clipboard() -> Result<Option<ClipboardSnapshot>, AppError> {
+    #[cfg(target_os = "windows")]
+    {
+        snapshot_clipboard_windows()
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        Ok(None)
+    }
+}
+
+/// 把快照写回剪贴板（`EmptyClipboard` + 逐格式 `SetClipboardData`）
+///
+/// 单个格式写失败只告警不中断，其余格式尽力还原。
+pub fn restore_clipboard(snapshot: &ClipboardSnapshot) -> Result<(), AppError> {
+    #[cfg(target_os = "windows")]
+    {
+        restore_clipboard_windows(snapshot)
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let _ = snapshot;
+        Ok(())
+    }
+}
+
+/// 等待剪贴板序列号离开 `seq_before`（10ms 步进轮询）
+///
+/// 返回首次观察到的新序列号，超时返回 None，
+/// 避免把旧剪贴板内容误当选区。
+pub fn wait_clipboard_change(seq_before: u32, timeout: std::time::Duration) -> Option<u32> {
+    #[cfg(target_os = "windows")]
+    {
+        wait_clipboard_change_windows(seq_before, timeout)
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let _ = (seq_before, timeout);
+        None
+    }
+}
+
+/// 只读 CF_UNICODETEXT（不截断、不读富格式；上层划词自己清洗）
+pub fn read_clipboard_text() -> Result<Option<String>, AppError> {
+    #[cfg(target_os = "windows")]
+    {
+        read_clipboard_text_windows()
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        read_clipboard_text_linux()
+    }
+}
+
 /// 按字节截断（不切坏 UTF-8）
 fn truncate_bytes(text: &str, max_bytes: usize) -> (String, bool) {
     if text.len() <= max_bytes {
@@ -147,6 +251,9 @@ fn truncate_chars(text: &str, max_chars: usize) -> (String, bool) {
 // Windows 实现
 // ============================================================
 #[cfg(target_os = "windows")]
+pub(crate) use windows_impl::finish_owned_copy;
+
+#[cfg(target_os = "windows")]
 mod windows_impl {
     use super::*;
     use std::ffi::OsStr;
@@ -154,8 +261,8 @@ mod windows_impl {
     use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL};
     use windows::Win32::System::DataExchange::{
         CloseClipboard, CountClipboardFormats, EmptyClipboard, EnumClipboardFormats,
-        GetClipboardData, GetClipboardSequenceNumber, OpenClipboard, RegisterClipboardFormatW,
-        SetClipboardData,
+        GetClipboardData, GetClipboardOwner, GetClipboardSequenceNumber, OpenClipboard,
+        RegisterClipboardFormatW, SetClipboardData,
     };
     use windows::Win32::System::Memory::{
         GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
@@ -186,6 +293,166 @@ mod windows_impl {
     pub fn get_sequence_number_windows() -> Result<u32, AppError> {
         let seq = unsafe { GetClipboardSequenceNumber() };
         Ok(seq)
+    }
+
+    /// GDI 句柄类格式：不是 HGLOBAL 字节语义，快照无法按字节拷贝
+    const CF_BITMAP: u32 = 2;
+    const CF_METAFILEPICT: u32 = 3;
+    const CF_PALETTE: u32 = 9;
+    const CF_ENHMETAFILE: u32 = 14;
+    const CF_OWNERDISPLAY: u32 = 0x80;
+
+    /// 是否为句柄语义格式（快照跳过）
+    pub(super) fn is_handle_format(fmt: u32) -> bool {
+        matches!(
+            fmt,
+            CF_BITMAP | CF_METAFILEPICT | CF_PALETTE | CF_ENHMETAFILE | CF_OWNERDISPLAY
+        )
+    }
+
+    /// 带重试的剪贴板打开（5 × 20ms，超预算降级为 ClipboardBusy）
+    fn open_clipboard_with_retry() -> Result<ClipboardGuard, AppError> {
+        for attempt in 0..5 {
+            if attempt > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            if unsafe { OpenClipboard(None) }.is_ok() {
+                return Ok(ClipboardGuard);
+            }
+        }
+        Err(AppError::ClipboardBusy)
+    }
+
+    pub fn snapshot_clipboard_windows() -> Result<Option<ClipboardSnapshot>, AppError> {
+        let _guard = open_clipboard_with_retry()?;
+        let formats = enumerate_formats()?;
+
+        let mut snapshot = ClipboardSnapshot::default();
+        let mut total: usize = 0;
+        for fmt in formats {
+            if is_handle_format(fmt) {
+                snapshot.skipped_handle_formats += 1;
+                continue;
+            }
+
+            // SAFETY: 剪贴板已打开；句柄由系统持有，仅在本块内读取拷贝
+            let handle = match unsafe { GetClipboardData(fmt) } {
+                Ok(h) => h,
+                Err(_) => continue,
+            };
+            let hglobal = HGLOBAL(handle.0);
+            // SAFETY: hglobal 来自 GetClipboardData，GlobalLock/Unlock 配对
+            let ptr = unsafe { GlobalLock(hglobal) } as *const u8;
+            if ptr.is_null() {
+                continue;
+            }
+
+            let size = unsafe { GlobalSize(hglobal) };
+            total += size;
+            if total > SNAPSHOT_MAX_BYTES {
+                log::info!(
+                    "[selection] snapshot too large: {} bytes, abort fallback",
+                    total
+                );
+                return Ok(None);
+            }
+
+            // SAFETY: ptr/size 来自 GlobalLock/GlobalSize，读取期间句柄有效
+            let bytes = unsafe { std::slice::from_raw_parts(ptr, size) };
+            snapshot.formats.push((fmt, bytes.to_vec()));
+            let _ = unsafe { GlobalUnlock(hglobal) };
+        }
+
+        log::info!(
+            "[selection] snapshot: formats={} skipped={} bytes={}",
+            snapshot.formats.len(),
+            snapshot.skipped_handle_formats,
+            total
+        );
+        Ok(Some(snapshot))
+    }
+
+    pub fn restore_clipboard_windows(snapshot: &ClipboardSnapshot) -> Result<(), AppError> {
+        let _guard = open_clipboard_with_retry()?;
+        restore_open_clipboard(snapshot)
+    }
+
+    fn restore_open_clipboard(snapshot: &ClipboardSnapshot) -> Result<(), AppError> {
+        unsafe { EmptyClipboard() }?;
+
+        let mut failed = None;
+        for (fmt, bytes) in &snapshot.formats {
+            if let Err(e) = set_clipboard_bytes(*fmt, bytes) {
+                // 单格式失败不中断：其余格式尽力还原
+                log::warn!("[selection] restore format {} failed: {}", fmt, e);
+                failed = Some(e);
+            }
+        }
+
+        failed.map_or(Ok(()), Err)
+    }
+
+    /// 在同一次打开中校验来源、读取并还原，避免覆盖读取之后的新复制。
+    pub(crate) fn finish_owned_copy(
+        window: &tauri::WebviewWindow,
+        snapshot: &ClipboardSnapshot,
+        expected_seq: u32,
+        pid: u32,
+        read_text: bool,
+        still_current: impl FnOnce() -> bool,
+    ) -> Result<Option<(Option<String>, u32)>, AppError> {
+        use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+
+        let hwnd = window
+            .hwnd()
+            .map_err(|error| AppError::Internal(error.to_string()))?;
+        // SAFETY: 使用 Quick 窗口作为还原时的剪贴板所有者。
+        unsafe { OpenClipboard(Some(windows::Win32::Foundation::HWND(hwnd.0))) }
+            .map_err(|_| AppError::ClipboardBusy)?;
+        let _guard = ClipboardGuard;
+        let mut owner_pid = 0;
+        // SAFETY: 剪贴板已打开，句柄由系统返回，PID 输出参数在调用期间有效。
+        unsafe {
+            if GetClipboardSequenceNumber() != expected_seq {
+                return Ok(None);
+            }
+            let owner = GetClipboardOwner()?;
+            GetWindowThreadProcessId(owner, Some(&mut owner_pid));
+        }
+        if owner_pid == 0 || owner_pid != pid || !still_current() {
+            return Ok(None);
+        }
+        let text = if read_text {
+            read_unicode_text().unwrap_or_else(|error| {
+                log::warn!("[selection] WM_COPY text read failed: {}", error);
+                None
+            })
+        } else {
+            None
+        };
+        restore_open_clipboard(snapshot)?;
+        Ok(Some((text, get_sequence_number_windows()?)))
+    }
+
+    pub fn wait_clipboard_change_windows(
+        seq_before: u32,
+        timeout: std::time::Duration,
+    ) -> Option<u32> {
+        let start = std::time::Instant::now();
+        while start.elapsed() < timeout {
+            // SAFETY: GetClipboardSequenceNumber 无失败语义
+            let current = unsafe { GetClipboardSequenceNumber() };
+            if current != seq_before {
+                return Some(current);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        None
+    }
+
+    pub fn read_clipboard_text_windows() -> Result<Option<String>, AppError> {
+        let _guard = open_clipboard_with_retry()?;
+        read_unicode_text()
     }
 
     pub fn read_clipboard_content_windows() -> Result<Option<ClipboardEntry>, AppError> {
@@ -921,10 +1188,20 @@ mod linux_impl {
         Ok(None)
     }
 
-    pub fn write_clipboard_content_linux(content: &ClipboardContent) -> Result<(), AppError> {
+    /// 只读纯文本（划词回退用；无文本或读取失败返回 None）
+    pub fn read_clipboard_text_linux() -> Result<Option<String>, AppError> {
         let mut clipboard = get_clipboard()?;
         let cb = clipboard.as_mut().ok_or(AppError::ClipboardRead)?;
 
+        match cb.get_text() {
+            Ok(text) if !text.trim().is_empty() => Ok(Some(text)),
+            _ => Ok(None),
+        }
+    }
+
+    pub fn write_clipboard_content_linux(content: &ClipboardContent) -> Result<(), AppError> {
+        let mut clipboard = get_clipboard()?;
+        let cb = clipboard.as_mut().ok_or(AppError::ClipboardRead)?;
         match content {
             ClipboardContent::Text(text) | ClipboardContent::Rtf(text) => {
                 cb.set_text(text.clone())
@@ -1009,5 +1286,48 @@ mod tests {
     fn html预览去掉标签() {
         let preview = linux_impl::html_to_preview("<p>你好 <b>世界</b></p>");
         assert_eq!(preview, "你好 世界");
+    }
+
+    /// 快照跳过 GDI 句柄类格式（CF_BITMAP 等），保留 HGLOBAL 语义格式
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[allow(non_snake_case)]
+    fn 句柄语义格式被快照跳过() {
+        assert!(windows_impl::is_handle_format(2)); // CF_BITMAP
+        assert!(windows_impl::is_handle_format(3)); // CF_METAFILEPICT
+        assert!(windows_impl::is_handle_format(9)); // CF_PALETTE
+        assert!(windows_impl::is_handle_format(14)); // CF_ENHMETAFILE
+        assert!(!windows_impl::is_handle_format(13)); // CF_UNICODETEXT
+        assert!(!windows_impl::is_handle_format(15)); // CF_HDROP
+        assert!(!windows_impl::is_handle_format(17)); // CF_DIBV5
+    }
+
+    /// 快照能解析出 CF_UNICODETEXT 文本（抑制 hash 兜底用）
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[allow(non_snake_case)]
+    fn 快照解析Unicode文本() {
+        let units: Vec<u8> = "你好"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        let snapshot = ClipboardSnapshot {
+            formats: vec![(13, units)],
+            skipped_handle_formats: 0,
+        };
+        assert_eq!(snapshot.unicode_text(), Some("你好".to_string()));
+        assert_eq!(snapshot.total_bytes(), 6);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[allow(non_snake_case)]
+    fn 无文本格式的快照返回None() {
+        let snapshot = ClipboardSnapshot {
+            formats: vec![(8, vec![0u8; 40])], // CF_DIB
+            skipped_handle_formats: 0,
+        };
+        assert_eq!(snapshot.unicode_text(), None);
     }
 }

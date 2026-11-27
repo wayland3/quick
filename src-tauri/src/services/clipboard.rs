@@ -495,4 +495,79 @@ mod tests {
         assert!(suppression.should_skip_hash("hash-a", now));
         assert!(!suppression.should_skip_hash("hash-b", now));
     }
+
+    /// 划词回退契约：seal 区间必须同时覆盖目标应用的复制写入与自身还原写入
+    ///
+    /// seq_after 在还原完成后读取；还原 = EmptyClipboard + 逐格式
+    /// SetClipboardData，每次都递增序列号，区间必须吃到最后一次写入。
+    #[test]
+    #[allow(non_snake_case)]
+    fn 回退封印区间覆盖两段写入() {
+        let suppression = PasteSuppression::new();
+        let now = Instant::now();
+        let seq_before = 500;
+
+        suppression.begin(seq_before, now);
+        // 目标复制写到 506；自身还原（多格式）写到 511
+        suppression.seal(seq_before, 511, None, now);
+
+        for seq in [501, 504, 506, 508, 511] {
+            assert!(
+                suppression.should_skip_seq(seq, now),
+                "seq={} 应被抑制",
+                seq
+            );
+        }
+        assert!(!suppression.should_skip_seq(512, now));
+    }
+
+    /// 划词回退执行期间（begin 后、seal 前）监控线程轮询：
+    /// pending 窗口（delta ≤ 64）抑制目标复制与还原进行中的写入
+    #[test]
+    #[allow(non_snake_case)]
+    fn 回退执行期间pending窗口抑制中间态() {
+        let suppression = PasteSuppression::new();
+        let now = Instant::now();
+        let seq_before = 3000;
+
+        suppression.begin(seq_before, now);
+        assert!(suppression.should_skip_seq(3004, now), "目标复制写入");
+        assert!(suppression.should_skip_seq(3020, now), "还原进行中写入");
+        // 序列号未动（复制未发生）不应误报
+        assert!(!suppression.should_skip_seq(3000, now));
+    }
+
+    /// 序列号增量超过 pending 覆盖（delta > 64）时靠登记 hash 兜底：
+    /// 中间态（复制出的选中文本）与还原态各自登记，均按内容跳过
+    #[test]
+    #[allow(non_snake_case)]
+    fn 回退超出pending覆盖时hash兜底() {
+        let suppression = PasteSuppression::new();
+        let now = Instant::now();
+        let seq_before = 1000;
+
+        suppression.begin(seq_before, now);
+        // 中间态：目标应用复制出的选中文本（在还原前登记）
+        suppression.add_hash("hash-selection".to_string(), now);
+        // 还原态：与监听线程同管线回读的 hash，随 seal 登记
+        suppression.seal(seq_before, 1120, Some("hash-restored".to_string()), now);
+
+        assert!(suppression.should_skip_hash("hash-selection", now));
+        assert!(suppression.should_skip_hash("hash-restored", now));
+        assert!(!suppression.should_skip_hash("hash-other", now));
+    }
+
+    /// 无文本快照（如纯图片）未登记 hash 时，只靠区间抑制、不误伤其他内容
+    #[test]
+    #[allow(non_snake_case)]
+    fn 回退无hash快照仅区间抑制() {
+        let suppression = PasteSuppression::new();
+        let now = Instant::now();
+
+        suppression.begin(2000, now);
+        suppression.seal(2000, 2010, None, now);
+
+        assert!(suppression.should_skip_seq(2005, now));
+        assert!(!suppression.should_skip_hash("anything", now));
+    }
 }

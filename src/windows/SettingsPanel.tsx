@@ -211,10 +211,28 @@ function GeneralTab({
           )}
         </div>
 
-        {/* 划词读取说明：纯提示，无配置项 */}
+        {/* 划词读取：Ctrl+C 回退开关 + 兼容性说明 */}
         <div className="border-t border-[var(--border)] pt-8">
           <div className="mb-3 text-sm font-medium text-[var(--text)]">划词读取说明</div>
-          <ul className="list-disc space-y-2 pl-4 text-xs leading-5 text-[var(--text-muted)]">
+          <div className="flex items-start justify-between gap-6">
+            <div className="flex-1">
+              <div className="text-sm font-medium text-[var(--text)]">划词读取增强</div>
+              <div className="mt-1 text-xs text-[var(--text-muted)]">
+                无障碍读不到选区时，自动模拟 Ctrl+C 复制并读取，随后还原剪贴板
+              </div>
+            </div>
+            <label className="relative inline-flex cursor-pointer items-center">
+              <input
+                type="checkbox"
+                aria-label="划词读取增强"
+                checked={settings.selection_copy_fallback}
+                onChange={(e) => onUpdate('selection_copy_fallback', e.target.checked)}
+                className="peer sr-only"
+              />
+              <div className="peer h-6 w-11 rounded-full bg-[var(--surface-active)] after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-[var(--border)] after:bg-white after:transition-all after:content-[''] peer-checked:bg-[var(--accent)] peer-checked:after:translate-x-full peer-checked:after:border-white"></div>
+            </label>
+          </div>
+          <ul className="mt-4 list-disc space-y-2 pl-4 text-xs leading-5 text-[var(--text-muted)]">
             <li>
               VS Code：默认不向系统暴露编辑器选区。需要设置一次以开启无障碍模式
               <kbd className={KEYCAP_CLASS}>
@@ -227,6 +245,10 @@ function GeneralTab({
                 Shift
               </kbd>
               选择后再按快捷键。
+            </li>
+            <li>
+              增强模式读取钉钉等不暴露选区的应用；不会在终端与 VS Code
+              等内嵌终端中触发，避免中断正在运行的命令。
             </li>
             <li>以上限制只影响划词预填，手动输入不受影响。</li>
           </ul>
@@ -1090,6 +1112,25 @@ function ConvertTab({
               type="checkbox"
               checked={settings.convert_json_enabled}
               onChange={(e) => onUpdate('convert_json_enabled', e.target.checked)}
+              className="peer sr-only"
+            />
+            <div className="peer h-6 w-11 rounded-full bg-[var(--surface-active)] after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-[var(--border)] after:bg-white after:transition-all after:content-[''] peer-checked:bg-[var(--accent)] peer-checked:after:translate-x-full peer-checked:after:border-white"></div>
+          </label>
+        </div>
+
+        {/* JSON 详情窗口失焦行为 */}
+        <div className="flex items-start justify-between gap-6">
+          <div className="flex-1">
+            <div className="text-sm font-medium text-[var(--text)]">JSON 详情窗口失焦时自动关闭</div>
+            <div className="mt-1 text-xs text-[var(--text-muted)]">
+              关闭后，点击外部区域时 JSON 详情窗口不会自动隐藏
+            </div>
+          </div>
+          <label className="relative inline-flex cursor-pointer items-center">
+            <input
+              type="checkbox"
+              checked={settings.json_detail_close_on_blur}
+              onChange={(e) => onUpdate('json_detail_close_on_blur', e.target.checked)}
               className="peer sr-only"
             />
             <div className="peer h-6 w-11 rounded-full bg-[var(--surface-active)] after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-[var(--border)] after:bg-white after:transition-all after:content-[''] peer-checked:bg-[var(--accent)] peer-checked:after:translate-x-full peer-checked:after:border-white"></div>

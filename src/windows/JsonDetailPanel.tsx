@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { getCurrentWindow } from '@tauri-apps/api/window';
 import { ipc } from '../lib/ipc';
 import { applyTheme } from '../lib/theme';
 
@@ -123,7 +122,6 @@ function JsonNode({ value, name, depth = 0 }: { value: unknown; name?: string; d
 export function JsonDetailPanel() {
   const [content, setContent] = useState('');
   const [error, setError] = useState('');
-  const currentWindow = getCurrentWindow();
 
   // 接收内容
   useEffect(() => {
@@ -142,16 +140,6 @@ export function JsonDetailPanel() {
       unlisten.then((fn) => fn()).catch(() => undefined);
     };
   }, []);
-
-  // 浮层隐藏时一起隐藏
-  useEffect(() => {
-    const unlisten = listen('overlay://hidden', () => {
-      currentWindow.hide().catch(() => undefined);
-    });
-    return () => {
-      unlisten.then((fn) => fn()).catch(() => undefined);
-    };
-  }, [currentWindow]);
 
   // 主题跟随设置
   useEffect(() => {
@@ -205,6 +193,18 @@ export function JsonDetailPanel() {
       <header className="qw-json-window-header" onMouseDown={handleMouseDown}>
         <span className="qw-json-detail-title">JSON 详情</span>
         <span className="qw-json-detail-hint">拖拽可移动</span>
+        <button
+          type="button"
+          className="qw-json-detail-close"
+          onMouseDown={(event) => event.stopPropagation()}
+          onClick={() => {
+            setError('');
+            ipc.jsonDetailHide(true).catch(() => setError('关闭失败，请重试'));
+          }}
+          aria-label="关闭"
+        >
+          ×
+        </button>
       </header>
       <div className="qw-json-window-content">
         {!content ? (

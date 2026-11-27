@@ -110,8 +110,8 @@ export const ipc = {
     return invokeWrapper<void>('json_detail_show', { content });
   },
 
-  async jsonDetailHide(): Promise<void> {
-    return invokeWrapper<void>('json_detail_hide');
+  async jsonDetailHide(dismiss = false): Promise<void> {
+    return invokeWrapper<void>('json_detail_hide', { dismiss });
   },
 
   async jsonDetailContent(): Promise<string | null> {

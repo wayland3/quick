@@ -113,6 +113,8 @@ describe('IPC 契约', () => {
           { name: 'Google', url_template: 'https://www.google.com/search?q={query}' },
           { name: '百度', url_template: 'https://www.baidu.com/s?wd={query}' },
         ],
+        selection_copy_fallback: true,
+        json_detail_close_on_blur: true,
       };
 
       const keys = Object.keys(settings).sort();

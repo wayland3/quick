@@ -142,6 +142,12 @@ pub struct Settings {
     /// 搜索引擎列表（最多 3 条）
     #[serde(default = "default_search_engines")]
     pub search_engines: Vec<SearchEngine>,
+    /// 划词读取 UIA 失败后用 Ctrl+C 回退（默认开；副作用见 convert 设计文档 §4.4）
+    #[serde(default = "default_true")]
+    pub selection_copy_fallback: bool,
+    /// JSON 详情窗口失焦时自动关闭（默认开）
+    #[serde(default = "default_true")]
+    pub json_detail_close_on_blur: bool,
 }
 
 /// 搜索引擎配置
@@ -238,6 +244,8 @@ impl Default for Settings {
             search_enabled: true,
             launcher_app_limit: default_launcher_app_limit(),
             search_engines: default_search_engines(),
+            selection_copy_fallback: true,
+            json_detail_close_on_blur: true,
         }
     }
 }
@@ -655,6 +663,8 @@ mod settings_tests {
         assert_eq!(settings.max_items, 10_000);
         assert!(settings.record_image);
         assert!(!settings.restore_clipboard_after_paste);
+        // 划词 Ctrl+C 回退：新增字段对旧 JSON 补默认开
+        assert!(settings.selection_copy_fallback);
         assert!(settings.validate().is_ok());
     }
 

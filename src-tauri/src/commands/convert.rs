@@ -210,23 +210,37 @@ fn format_datetime(parsed: ParsedDateTime, timezones: &[String]) -> Vec<ConvertI
                 group: ConvertGroup::Time,
             });
 
+            items.push(ConvertItem {
+                label: "时间戳（毫秒）".to_string(),
+                value: (dt.timestamp_millis()).to_string(),
+                group: ConvertGroup::Time,
+            });
+
             items
         }
         ParsedDateTime::Naive(dt) => {
-            // 无时区：多个时间戳（按时区列表逐个假设）
-            timezones
-                .iter()
-                .filter_map(|tz| {
-                    let offset_seconds = crate::models::parse_offset_seconds(tz).ok()?;
-                    let offset = FixedOffset::east_opt(offset_seconds)?;
-                    let dt_with_tz = offset.from_local_datetime(&dt).single()?;
-                    Some(ConvertItem {
-                        label: format!("输入为 {}", format_timezone_label(tz)),
-                        value: dt_with_tz.timestamp().to_string(),
-                        group: ConvertGroup::Time,
-                    })
-                })
-                .collect()
+            // 无时区：多个时间戳（按时区列表逐个假设），每个时区输出秒级 + 毫秒级
+            let mut items = Vec::new();
+            for tz in timezones {
+                if let Ok(offset_seconds) = crate::models::parse_offset_seconds(tz) {
+                    if let Some(offset) = FixedOffset::east_opt(offset_seconds) {
+                        if let Some(dt_with_tz) = offset.from_local_datetime(&dt).single() {
+                            let label = format!("输入为 {}", format_timezone_label(tz));
+                            items.push(ConvertItem {
+                                label: label.clone(),
+                                value: dt_with_tz.timestamp().to_string(),
+                                group: ConvertGroup::Time,
+                            });
+                            items.push(ConvertItem {
+                                label: format!("{}（毫秒）", label),
+                                value: dt_with_tz.timestamp_millis().to_string(),
+                                group: ConvertGroup::Time,
+                            });
+                        }
+                    }
+                }
+            }
+            items
         }
     }
 }
@@ -244,26 +258,32 @@ fn compute_md5(input: &str) -> String {
 /// 1. 快路径：直接 serde_json 解析（标准 JSON）
 /// 2. 容错路径：先清洗常见非标准写法（单引号、注释、无引号键、尾部逗号），再解析
 /// 3. 提取路径：从杂质文本中用括号深度扫描提取 JSON
+///
+/// 只接受 object 或 array（标量如数字、字符串、布尔值、null 无意义，跳过）
 fn try_format_json(input: &str) -> Option<ConvertItem> {
     let trimmed = input.trim();
 
     // 1. 快路径：标准 JSON
     if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
-        return Some(ConvertItem {
-            label: "JSON".to_string(),
-            value: serde_json::to_string_pretty(&value).unwrap_or_else(|_| trimmed.to_string()),
-            group: ConvertGroup::Json,
-        });
+        if value.is_object() || value.is_array() {
+            return Some(ConvertItem {
+                label: "JSON".to_string(),
+                value: serde_json::to_string_pretty(&value).unwrap_or_else(|_| trimmed.to_string()),
+                group: ConvertGroup::Json,
+            });
+        }
     }
 
     // 2. 容错路径：清洗非标准写法
     let cleaned = clean_json(trimmed);
     if let Ok(value) = serde_json::from_str::<serde_json::Value>(&cleaned) {
-        return Some(ConvertItem {
-            label: "JSON".to_string(),
-            value: serde_json::to_string_pretty(&value).unwrap_or(cleaned),
-            group: ConvertGroup::Json,
-        });
+        if value.is_object() || value.is_array() {
+            return Some(ConvertItem {
+                label: "JSON".to_string(),
+                value: serde_json::to_string_pretty(&value).unwrap_or(cleaned),
+                group: ConvertGroup::Json,
+            });
+        }
     }
 
     // 3. 提取路径：从杂质中提取
@@ -275,11 +295,13 @@ fn try_format_json(input: &str) -> Option<ConvertItem> {
             clean_json(&json_str)
         };
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(&candidate) {
-            return Some(ConvertItem {
-                label: "JSON".to_string(),
-                value: serde_json::to_string_pretty(&value).unwrap_or(candidate),
-                group: ConvertGroup::Json,
-            });
+            if value.is_object() || value.is_array() {
+                return Some(ConvertItem {
+                    label: "JSON".to_string(),
+                    value: serde_json::to_string_pretty(&value).unwrap_or(candidate),
+                    group: ConvertGroup::Json,
+                });
+            }
         }
     }
 
@@ -718,10 +740,17 @@ fn current_time_snapshot(timezones: &[String]) -> Vec<ConvertItem> {
         }
     }
 
-    // 当前时间戳
+    // 当前时间戳（秒级）
     items.push(ConvertItem {
         label: "时间戳".to_string(),
         value: now.timestamp().to_string(),
+        group: ConvertGroup::Time,
+    });
+
+    // 当前时间戳（毫秒级）
+    items.push(ConvertItem {
+        label: "时间戳（毫秒）".to_string(),
+        value: now.timestamp_millis().to_string(),
         group: ConvertGroup::Time,
     });
 
@@ -763,11 +792,15 @@ mod tests {
         let result = try_convert_time("2024", &["+8".to_string(), "0".to_string()]);
         assert!(result.is_some());
         let items = result.unwrap();
-        assert_eq!(items.len(), 2);
+        assert_eq!(items.len(), 4);
         assert_eq!(items[0].label, "输入为 UTC +8");
         assert_eq!(items[0].value, "1704038400");
-        assert_eq!(items[1].label, "输入为 UTC +0");
-        assert_eq!(items[1].value, "1704067200");
+        assert_eq!(items[1].label, "输入为 UTC +8（毫秒）");
+        assert_eq!(items[1].value, "1704038400000");
+        assert_eq!(items[2].label, "输入为 UTC +0");
+        assert_eq!(items[2].value, "1704067200");
+        assert_eq!(items[3].label, "输入为 UTC +0（毫秒）");
+        assert_eq!(items[3].value, "1704067200000");
     }
 
     #[test]
@@ -780,9 +813,11 @@ mod tests {
         let result = try_convert_time("2024-01-01 10:00:00", &["+8".to_string(), "0".to_string()]);
         assert!(result.is_some());
         let items = result.unwrap();
-        assert_eq!(items.len(), 2);
+        assert_eq!(items.len(), 4);
         assert_eq!(items[0].label, "输入为 UTC +8");
-        assert_eq!(items[1].label, "输入为 UTC +0");
+        assert_eq!(items[1].label, "输入为 UTC +8（毫秒）");
+        assert_eq!(items[2].label, "输入为 UTC +0");
+        assert_eq!(items[3].label, "输入为 UTC +0（毫秒）");
     }
 
     #[test]
@@ -790,9 +825,10 @@ mod tests {
         let result = try_convert_time("2024-01-01T10:00:00Z", &["+8".to_string()]);
         assert!(result.is_some());
         let items = result.unwrap();
-        assert_eq!(items.len(), 2);
+        assert_eq!(items.len(), 3);
         assert_eq!(items[0].label, "UTC +8");
         assert_eq!(items[1].label, "时间戳");
+        assert_eq!(items[2].label, "时间戳（毫秒）");
     }
 
     #[test]
@@ -917,6 +953,32 @@ mod tests {
         let item = result.unwrap();
         assert!(item.value.contains("\"name\""));
         assert!(item.value.contains("\"key\""));
+    }
+
+    #[test]
+    fn json跳过标量数字() {
+        // 数字是合法 JSON 但无意义，不应作为 JSON 结果
+        assert!(try_format_json("123").is_none());
+        assert!(try_format_json("123.45").is_none());
+        assert!(try_format_json("-42").is_none());
+    }
+
+    #[test]
+    fn json跳过标量字符串和布尔值() {
+        // 字符串、布尔值、null 也是合法 JSON 但无意义
+        assert!(try_format_json("\"hello\"").is_none());
+        assert!(try_format_json("true").is_none());
+        assert!(try_format_json("false").is_none());
+        assert!(try_format_json("null").is_none());
+    }
+
+    #[test]
+    fn json接受object和array() {
+        // object 和 array 有意义，应接受
+        assert!(try_format_json("{\"a\":1}").is_some());
+        assert!(try_format_json("[1,2,3]").is_some());
+        assert!(try_format_json("{}").is_some());
+        assert!(try_format_json("[]").is_some());
     }
 
     #[test]

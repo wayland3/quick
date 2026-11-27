@@ -2,9 +2,11 @@
 // 统一入口，业务侧只订阅动作事件
 
 use crate::error::AppError;
+use crate::services::selection::{SelectionPermit, SelectionSource};
 use global_hotkey::GlobalHotKeyManager;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
@@ -77,6 +79,27 @@ pub struct HotkeyManager {
     bindings: Arc<Mutex<HashMap<HotkeyAction, String>>>,
     failed: Arc<Mutex<Vec<FailedHotkey>>>,
     suspended: Arc<Mutex<HashSet<HotkeyAction>>>,
+    selection_pending: Arc<AtomicBool>,
+}
+
+fn emit_selection(
+    app: &AppHandle,
+    action: HotkeyAction,
+    source: SelectionSource,
+    _permit: Arc<SelectionPermit>,
+) {
+    let text = crate::services::selection::capture_selected_text(app, source);
+    match (action, text) {
+        (HotkeyAction::Convert, text) => {
+            let _ = app.emit("convert://prefill", text.unwrap_or_default());
+        }
+        (HotkeyAction::Launcher, Some(text)) => {
+            let _ = app.emit("launcher://prefill", text);
+        }
+        _ => {
+            let _ = app.emit("hotkey://pressed", action.as_str());
+        }
+    }
 }
 
 impl HotkeyManager {
@@ -85,6 +108,7 @@ impl HotkeyManager {
             bindings: Arc::new(Mutex::new(HashMap::new())),
             failed: Arc::new(Mutex::new(Vec::new())),
             suspended: Arc::new(Mutex::new(HashSet::new())),
+            selection_pending: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -108,6 +132,7 @@ impl HotkeyManager {
         log::info!("register: parsed shortcut successfully");
 
         let suspended_clone = self.suspended.clone();
+        let selection_pending = self.selection_pending.clone();
         let result = app.global_shortcut().on_shortcut(shortcut, {
             let app_clone = app.clone();
             let action_clone = action;
@@ -119,7 +144,7 @@ impl HotkeyManager {
                         .ok()
                         .map(|s| s.contains(&action_clone))
                         .unwrap_or(false);
-                    if !is_suspended {
+                    if !is_suspended && !selection_pending.load(Ordering::Acquire) {
                         // 浮层已显示同模式时直接切换隐藏，跳过划词读取。
                         // 否则焦点在浮层上，UIA 读不到选区会等 500ms 超时，
                         // 用户感知到明显的关闭延迟。
@@ -140,35 +165,53 @@ impl HotkeyManager {
                                 }
                         };
 
-                        if should_toggle {
+                        if should_toggle || action_clone == HotkeyAction::Clipboard {
                             // 同模式已显示：发通用事件，前端调 overlay_show 触发 toggle
+                            // 剪贴板面板不需要划词预填，走通用事件
                             let _ = app_clone.emit("hotkey://pressed", action_clone.as_str());
                         } else {
-                            // 划词读取：转换与翻译（启动器）共用同一入口。
-                            // 必须在浮层显示前调用，保证目标窗口仍在前台。
-                            match action_clone {
-                                HotkeyAction::Convert => {
-                                    let selected =
-                                        crate::services::selection::capture_selected_text()
-                                            .unwrap_or_default();
-                                    let _ = app_clone.emit("convert://open", selected);
-                                }
-                                HotkeyAction::Launcher => {
-                                    match crate::services::selection::capture_selected_text() {
-                                        Some(text) => {
-                                            let _ = app_clone.emit("launcher://open", text);
+                            // 立即显示浮层（被动：不抢焦点，让 UIA 在原应用读取选区）
+                            // 划词读取在后台线程并行进行，完成后发 prefill 事件
+                            {
+                                let overlay =
+                                    app_clone.state::<crate::services::window::OverlayManager>();
+                                if let Some(window) = app_clone.get_webview_window("overlay") {
+                                    let mode = match action_clone {
+                                        HotkeyAction::Convert => {
+                                            Some(crate::services::window::OverlayMode::Convert)
                                         }
-                                        // 读不到选区时保留上次查询词
-                                        None => {
-                                            let _ = app_clone
-                                                .emit("hotkey://pressed", action_clone.as_str());
+                                        HotkeyAction::Launcher => {
+                                            Some(crate::services::window::OverlayMode::Launcher)
                                         }
+                                        _ => None,
+                                    };
+                                    if let Some(mode) = mode {
+                                        let _ = overlay.show_passive(&window, mode);
                                     }
                                 }
-                                _ => {
-                                    let _ =
-                                        app_clone.emit("hotkey://pressed", action_clone.as_str());
-                                }
+                            }
+
+                            let Some(permit) = SelectionPermit::acquire(&selection_pending) else {
+                                return;
+                            };
+                            let source = SelectionSource::capture();
+                            let worker_app = app_clone.clone();
+                            // Windows 窗口句柄及剪贴板所有者消息需要主循环继续运行。
+                            if let Err(error) = std::thread::Builder::new()
+                                .name("quick-selection".into())
+                                .spawn(move || {
+                                    emit_selection(&worker_app, action_clone, source, permit);
+                                    // 划词读取完成，激活浮层为正式前台窗口
+                                    if let Some(window) = worker_app.get_webview_window("overlay") {
+                                        let overlay = worker_app
+                                            .state::<crate::services::window::OverlayManager>(
+                                        );
+                                        overlay.activate(&window);
+                                    }
+                                })
+                            {
+                                log::warn!("[selection] could not start hotkey worker: {}", error);
+                                let _ = app_clone.emit("hotkey://pressed", action_clone.as_str());
                             }
                         }
                     }
@@ -484,6 +527,20 @@ impl HotkeyManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn 划词任务执行期间不接受并发任务() {
+        let pending = Arc::new(AtomicBool::new(false));
+        let permit = SelectionPermit::acquire(&pending).expect("首次任务应取得执行权");
+        assert!(SelectionPermit::acquire(&pending).is_none());
+        let cleanup = Arc::clone(&permit);
+        drop(permit);
+        assert!(SelectionPermit::acquire(&pending).is_none());
+        std::thread::spawn(move || drop(cleanup))
+            .join()
+            .expect("后台任务应完成");
+        assert!(SelectionPermit::acquire(&pending).is_some());
+    }
 
     /// 测试辅助：把 Result 的错误映射为 panic 消息（仅测试代码允许）
     trait UnwrapTest<T> {

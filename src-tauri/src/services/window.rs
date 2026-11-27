@@ -32,6 +32,10 @@ pub enum HideReason {
     Launch,      // 打开应用后隐藏，不恢复焦点（让新应用留在前台）
 }
 
+fn detail_hide_checks_blur_setting(reason: HideReason) -> bool {
+    reason == HideReason::Blur
+}
+
 impl OverlayMode {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -84,7 +88,41 @@ impl OverlayManager {
     }
 
     pub fn show(&self, window: &WebviewWindow, mode: OverlayMode) -> Result<(), AppError> {
-        log::info!("show: called with mode {:?}", mode);
+        self.show_inner(window, mode, false)
+    }
+
+    /// 被动显示：窗口可见但不抢焦点
+    ///
+    /// 用于划词预填场景：先显示浮层让 UIA 在原应用上读取选区，
+    /// 选区读取完成后再由 `activate` 提升为正式前台窗口。
+    pub fn show_passive(&self, window: &WebviewWindow, mode: OverlayMode) -> Result<(), AppError> {
+        self.show_inner(window, mode, true)
+    }
+
+    /// 激活已显示的浮层（从「可见但不抢焦点」提升为正式前台）
+    ///
+    /// 仅在浮层仍处于 Showing/Shown 状态时激活，避免用户已关闭后重新拉起。
+    pub fn activate(&self, window: &WebviewWindow) {
+        let state = self.get_state();
+        if !matches!(state, OverlayState::Showing | OverlayState::Shown) {
+            return;
+        }
+        #[cfg(target_os = "windows")]
+        {
+            if let Ok(hwnd) = window.hwnd() {
+                crate::platform::focus::activate_window(hwnd.0 as isize);
+            }
+        }
+        let _ = window.set_focus();
+    }
+
+    fn show_inner(
+        &self,
+        window: &WebviewWindow,
+        mode: OverlayMode,
+        passive: bool,
+    ) -> Result<(), AppError> {
+        log::info!("show: called with mode {:?} passive={}", mode, passive);
         let mut state = self
             .state
             .lock()
@@ -149,26 +187,46 @@ impl OverlayManager {
         window.set_size(tauri::LogicalSize::new(width, height))?;
         window.set_position(tauri::LogicalPosition::new(x, y))?;
 
-        // 显示窗口
-        window.show()?;
+        if passive {
+            // 被动显示：使用平台层 SW_SHOWNA（Windows），不抢焦点
+            #[cfg(target_os = "windows")]
+            {
+                let hwnd = window.hwnd().map(|h| h.0 as isize).unwrap_or(0);
+                let work_area = monitor.work_area();
+                crate::platform::focus::show_no_activate(
+                    work_area.left + (x as f64 * monitor.scale_factor) as i32,
+                    work_area.top + (y as f64 * monitor.scale_factor) as i32,
+                    (width as f64 * monitor.scale_factor) as u32,
+                    (height as f64 * monitor.scale_factor) as u32,
+                    hwnd,
+                );
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                window.show()?;
+            }
+        } else {
+            // 显示窗口
+            window.show()?;
 
-        // Linux 上需要延迟设置焦点，避免窗口管理器立即切换焦点
-        #[cfg(target_os = "linux")]
-        {
-            let window_clone = window.clone();
-            std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(50));
-                let _ = window_clone.set_focus();
-            });
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _ = window.set_focus();
+            // Linux 上需要延迟设置焦点，避免窗口管理器立即切换焦点
+            #[cfg(target_os = "linux")]
+            {
+                let window_clone = window.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    let _ = window_clone.set_focus();
+                });
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = window.set_focus();
+            }
         }
 
         // 更新状态
         let reduced_motion = self.prefers_reduced_motion_reduced();
-        *state = if reduced_motion {
+        *state = if reduced_motion || passive {
             OverlayState::Shown
         } else {
             OverlayState::Showing
@@ -181,11 +239,11 @@ impl OverlayManager {
         // 发送事件
         let _ = window.emit("overlay://shown", mode.as_str());
         if mode != OverlayMode::Convert {
-            crate::services::jsondetail::hide_detail_window(window.app_handle());
+            crate::services::jsondetail::hide_detail_window(window.app_handle(), false);
         }
 
-        // 如果有动画，延迟更新状态
-        if !reduced_motion {
+        // 如果有动画，延迟更新状态（passive 模式跳过动画）
+        if !reduced_motion && !passive {
             let state_clone = Arc::clone(&self.state);
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_millis(120));
@@ -220,7 +278,7 @@ impl OverlayManager {
                     drop(current);
                     // 隐藏 WebviewWindow
                     let _ = window.emit("overlay://hidden", ());
-                    crate::services::jsondetail::hide_detail_window(window.app_handle());
+                    crate::services::jsondetail::hide_detail_window(window.app_handle(), false);
                     window.hide()?;
                     *self
                         .state
@@ -287,7 +345,7 @@ impl OverlayManager {
         // 发送事件
         let _ = window.emit("overlay://shown", mode.as_str());
         if mode != OverlayMode::Convert {
-            crate::services::jsondetail::hide_detail_window(window.app_handle());
+            crate::services::jsondetail::hide_detail_window(window.app_handle(), false);
         }
 
         // 如果有动画，延迟更新状态
@@ -335,9 +393,12 @@ impl OverlayManager {
             }
         }
 
-        // 发送事件（详情独立窗口监听此事件后自行隐藏）
+        // 主浮层失焦时按设置保留详情；其他隐藏原因始终关闭详情
         let _ = window.emit("overlay://hidden", ());
-        crate::services::jsondetail::hide_detail_window(window.app_handle());
+        crate::services::jsondetail::hide_detail_window(
+            window.app_handle(),
+            detail_hide_checks_blur_setting(reason),
+        );
 
         // 隐藏窗口
         let reduced_motion = self.prefers_reduced_motion_reduced();
@@ -405,7 +466,7 @@ impl OverlayManager {
         }
 
         let _ = window.emit("overlay://hidden", ());
-        crate::services::jsondetail::hide_detail_window(window.app_handle());
+        crate::services::jsondetail::hide_detail_window(window.app_handle(), false);
         if let Err(e) = window.hide() {
             log::warn!("hide_for_paste: window.hide failed: {}", e);
         }
@@ -560,6 +621,20 @@ impl OverlayManager {
 
     pub fn get_mode(&self) -> Option<OverlayMode> {
         self.current_mode.lock().ok().and_then(|m| *m)
+    }
+
+    /// 详情只允许在转换主浮层显示期间打开；持有详情可见性锁时不能等待状态锁。
+    pub fn can_show_json_detail(&self) -> bool {
+        let Ok(state) = self.state.try_lock() else {
+            return false;
+        };
+        if !matches!(*state, OverlayState::Showing | OverlayState::Shown) {
+            return false;
+        }
+        self.current_mode
+            .try_lock()
+            .map(|mode| *mode == Some(OverlayMode::Convert))
+            .unwrap_or(false)
     }
 }
 
@@ -841,6 +916,37 @@ mod tests {
         assert_eq!(HideReason::UserCommand, HideReason::UserCommand);
         assert_ne!(HideReason::UserCommand, HideReason::Blur);
         assert_eq!(reasons.len(), 4);
+    }
+
+    #[test]
+    fn 只有失焦隐藏受详情自动关闭设置控制() {
+        assert!(detail_hide_checks_blur_setting(HideReason::Blur));
+        for reason in [
+            HideReason::UserCommand,
+            HideReason::ModeSwitch,
+            HideReason::Launch,
+        ] {
+            assert!(!detail_hide_checks_blur_setting(reason));
+        }
+    }
+
+    #[test]
+    fn 详情只在转换主浮层显示时允许打开() {
+        let manager = OverlayManager::new();
+        assert!(!manager.can_show_json_detail());
+
+        *manager.state.lock().unwrap() = OverlayState::Shown;
+        *manager.current_mode.lock().unwrap() = Some(OverlayMode::Convert);
+        assert!(manager.can_show_json_detail());
+
+        *manager.state.lock().unwrap() = OverlayState::Hiding;
+        assert!(!manager.can_show_json_detail());
+        *manager.state.lock().unwrap() = OverlayState::Shown;
+        *manager.current_mode.lock().unwrap() = Some(OverlayMode::Launcher);
+        assert!(!manager.can_show_json_detail());
+
+        let _busy = manager.state.lock().unwrap();
+        assert!(!manager.can_show_json_detail());
     }
 
     #[test]

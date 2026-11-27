@@ -89,6 +89,14 @@ pub async fn overlay_resize(app: tauri::AppHandle, payload: ResizePayload) -> Re
 /// 展示 JSON 详情独立窗口
 #[tauri::command]
 pub async fn json_detail_show(app: tauri::AppHandle, content: String) -> Result<(), AppError> {
+    let gate = app.state::<crate::services::jsondetail::DetailVisibilityGate>();
+    let guard = gate
+        .0
+        .lock()
+        .map_err(|_| AppError::Internal("detail visibility gate poisoned".into()))?;
+    if !guard.can_show() || !app.state::<OverlayManager>().can_show_json_detail() {
+        return Ok(());
+    }
     let webview = get_overlay_window(&app)?;
     if !webview.is_visible()? {
         return Ok(());
@@ -123,8 +131,14 @@ pub async fn json_detail_content(app: tauri::AppHandle) -> Option<String> {
 
 /// 隐藏 JSON 详情独立窗口
 #[tauri::command]
-pub async fn json_detail_hide(app: tauri::AppHandle) -> Result<(), AppError> {
-    crate::services::jsondetail::hide_detail_window(&app);
+pub async fn json_detail_hide(
+    app: tauri::AppHandle,
+    dismiss: Option<bool>,
+) -> Result<(), AppError> {
+    if dismiss.unwrap_or(false) {
+        return crate::services::jsondetail::dismiss_detail_window(&app);
+    }
+    crate::services::jsondetail::hide_detail_window(&app, false);
     Ok(())
 }
 

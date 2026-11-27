@@ -128,13 +128,14 @@ search:    → 解析 index 与 query → 从 settings.search_engines 取出 url
 
 ## 划词预填
 
-与 convert 共用同一入口 `services::selection::capture_selected_text()`（平台实现见 `docs/design/features/convert.md` §4）：
+与 convert 共用同一入口 `services::selection::capture_selected_text(&AppHandle)`（平台实现见 `docs/design/features/convert.md` §4）：
 
-1. **只读取、无副作用**：Windows 走 UIA（焦点元素 + 祖先回溯，500ms 超时），Linux 走 X11 PRIMARY；不模拟 Ctrl+C、不碰剪贴板。
-2. services 层统一 `trim`、空白视为未选中、超长截断（10 万字符）。
-3. `services/hotkey.rs`：`HotkeyAction::Launcher` 读到选区 → `emit("launcher://open", selected)`；读不到 → 回退 `hotkey://pressed`，保留上次查询词。
-4. `App.tsx`：监听 `launcher://open` → `overlayShow('launcher')` + `setLauncherPrefill(text)`；`overlay://hidden` 时清空 prefill，避免残留到下次打开。
-5. `LauncherPanel` 新增 `prefill` / `onPrefillConsumed` props（与 ConvertPanel 同构）：prefill 非空时替换 query 并消费。
+1. **无障碍优先、无副作用**：Windows 走 UIA（焦点元素 + 祖先回溯，500ms 超时），Linux 走 X11 PRIMARY；不模拟 Ctrl+C、不碰剪贴板。
+2. **UIA 失败后 Windows 走可选 Ctrl+C 回退**（钉钉等自绘控件应用；流程、副作用与终端黑名单见 convert §4.4-4.5，设置「划词读取增强」控制，默认开）。
+3. services 层统一 `trim`、空白视为未选中、超长截断（10 万字符）。
+4. `services/hotkey.rs`：`HotkeyAction::Launcher` 读到选区 → `emit("launcher://open", selected)`；读不到 → 回退 `hotkey://pressed`，保留上次查询词。
+5. `App.tsx`：监听 `launcher://open` → `overlayShow('launcher')` + `setLauncherPrefill(text)`；`overlay://hidden` 时清空 prefill，避免残留到下次打开。
+6. `LauncherPanel` 新增 `prefill` / `onPrefillConsumed` props（与 ConvertPanel 同构）：prefill 非空时替换 query 并消费。
 
 读取失败/超时由 selection 层兜底返回空，不影响浮层打开。
 

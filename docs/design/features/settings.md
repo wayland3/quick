@@ -40,13 +40,16 @@
 
 ## 常规页划词说明
 
-`SettingsPanel` 的 `GeneralTab` 底部固定渲染「划词读取说明」，纯静态文案，不读写设置、不走 IPC，固定 3 条：
+`SettingsPanel` 的 `GeneralTab` 底部渲染「划词读取说明」区块：
 
-1. VS Code：默认不向系统暴露编辑器选区。需要设置一次以开启无障碍模式 `Shift+Alt+F1`
-2. 终端里的 TUI（如 opencode）：普通拖拽会被应用接管，终端没有选区。按住 `Shift` 选择后再按快捷键
-3. 以上限制只影响划词预填，手动输入不受影响
+- 上方是「划词读取增强」开关（`selection_copy_fallback`，默认开），走通用 `onUpdate('selection_copy_fallback', …)` 设置保存链路，无独立 IPC
+- 下方静态文案 4 条（VS Code 无障碍、终端 TUI Shift 选择、增强模式适用范围、只影响预填）
 
-放在常规页而不是单独页签，是因为它没有配置项；用户排查「划词没反应」时第一眼能在设置里看到原因。
+放在常规页而不是单独页签，是因为开关与说明强关联；用户排查「划词没反应」时第一眼能在设置里看到原因与逃生口（关掉增强）。回退的实现机制见 `docs/design/features/convert.md` §4.4。
+
+## 转换页 JSON 详情
+
+转换页的 `json_detail_close_on_blur` 经通用 `onUpdate` 保存；JSON 详情的失焦策略由后端窗口焦点复查在事件发生时读取设置，见 `docs/design/features/convert.md` §6.1。主动关闭与结果切换不读取该设置。
 
 ## 关于页
 
@@ -56,4 +59,3 @@
 
 - `app_data_dir`：优先取运行时 `DbPath` 的父目录，保证显示的就是实际使用位置；未就绪才回退 `dirs::data_dir()/quick`。
 - `app_data_dir_open`：走 `tauri-plugin-opener`，交给系统文件管理器。
-

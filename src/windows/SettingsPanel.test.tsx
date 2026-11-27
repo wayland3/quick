@@ -42,6 +42,8 @@ const settings: Settings = {
     { name: 'Google', url_template: 'https://www.google.com/search?q={query}' },
     { name: '百度', url_template: 'https://www.baidu.com/s?wd={query}' },
   ],
+  selection_copy_fallback: true,
+  json_detail_close_on_blur: true,
 };
 
 describe('设置窗口常规页', () => {
@@ -58,6 +60,27 @@ describe('设置窗口常规页', () => {
     expect(screen.getByText(/VS Code：默认不向系统暴露编辑器选区/)).toBeDefined();
     expect(screen.getByText(/终端里的 TUI（如 opencode）/)).toBeDefined();
     expect(screen.getByText(/以上限制只影响划词预填/)).toBeDefined();
+  });
+
+  it('展示划词 Ctrl+C 回退开关并可切换', async () => {
+    vi.mocked(ipc.settingsUpdate).mockResolvedValue({
+      ...settings,
+      selection_copy_fallback: false,
+    });
+    render(<SettingsPanel />);
+    await waitFor(() => expect(screen.getByText('常规')).toBeDefined());
+
+    const toggle = screen.getByRole('checkbox', {
+      name: /划词读取增强/,
+    }) as HTMLInputElement;
+    expect(toggle.checked).toBe(true);
+
+    await act(async () => {
+      fireEvent.click(toggle);
+    });
+    expect(ipc.settingsUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ selection_copy_fallback: false }),
+    );
   });
 });
 

@@ -125,4 +125,15 @@ describe('ConvertPanel', () => {
     await act(async () => finishShow());
     await waitFor(() => expect(mockJsonDetailHide).toHaveBeenCalledTimes(1));
   });
+
+  it('主浮层卸载时不覆盖详情窗口的失焦策略', async () => {
+    mockConvertQuery.mockResolvedValue(jsonResult('{"a":1}'));
+    const view = render(<ConvertPanel />);
+    await waitFor(() => expect(mockJsonDetailShow).toHaveBeenCalled());
+    mockJsonDetailHide.mockClear();
+
+    view.unmount();
+    await act(async () => Promise.resolve());
+    expect(mockJsonDetailHide).not.toHaveBeenCalled();
+  });
 });

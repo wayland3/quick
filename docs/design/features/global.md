@@ -4,12 +4,13 @@
 
 ## 热键
 
-`services/hotkey.rs` 持有 `bindings`（当前生效）、`failed`（注册失败清单）、`suspended`（临时禁用）三份状态。
+`services/hotkey.rs` 持有当前绑定、注册失败清单、临时禁用和划词派发状态。
 
 - 启动：`lib.rs::register_startup_hotkeys` 逐个动作注册；失败先回退该动作默认键，仍失败才记入 `failed`，保证「至少还能打开一个面板」。
 - 改绑：`rebind` 先注册新键，成功后才注销旧键；失败会回滚 `failed` 追加记录。否则一次冲突会把可用旧键也弄丢。
 - 探测：另起独立 `GlobalHotKeyManager` 注册后立刻注销。与运行时绑定共用 manager 会被自身占用挡住，探测结果永远「不可用」。
 - 暂停：`suspend` 只注销不改配置，`resume` 用存储值重新注册。
+- 划词在后台执行，热键回调立即回到消息循环。结果发出后释放派发槽，迟到剪贴板清理使用单独的槽位。
 
 失败通知走 `services/notify.rs`：启动时浮层不可见，事件无人消费，必须额外弹系统通知；多条失败合并成一条，避免连弹。
 
@@ -22,9 +23,10 @@
 
 - 同模式再按热键 = 关闭（在 `Shown` 分支内判 mode），不同模式 = 原地切换且不重新 capture 前台窗口（浮层自己已是前台，capture 会拿到自己）。
 - 只有从 `Hidden` 进入时才 `capture_foreground` 存 `prev_window`；粘贴结束后靠它恢复焦点。
+- **被动显示**（`show_passive`）：划词预填场景使用 `SW_SHOWNA`（Windows）显示浮层，不抢焦点。原应用保持前台，UIA `GetFocusedElement()` 仍返回原应用的焦点元素，划词读取不受影响。读取完成后由 `activate` 提升为正式前台窗口。被动显示跳过 120ms 淡入动画（状态直接设为 `Shown`），因为浮层需要立即可见。
 - `show` 与 `hide` 的状态互斥由内部 `Mutex` 保证；`hide` 带 80ms 动画（受 `prefers_reduced_motion` 影响），`hide_for_paste` 则同步隐藏，因为后续写剪贴板与发键必须时序可控。
 - 失焦隐藏：`on_blur` 只在 `hide_on_blur` 为真时执行；粘贴流程期间要禁止它抢跑。
-- 转换详情是独立窗口；主浮层和详情任一窗口失焦后延迟复查两者焦点，只有两者都失焦才隐藏主浮层；隐藏主浮层时同步隐藏详情。
+- 转换详情是独立窗口；主浮层和详情任一窗口失焦后延迟复查两者焦点，只有两者都失焦且前台在应用外才处理。主浮层按全局 `hide_on_blur` 隐藏；详情按独立的 `json_detail_close_on_blur` 隐藏，即使主浮层先前已隐藏也要处理详情失焦。主动关闭主浮层或切换模式时始终同步隐藏详情。
 
 **状态锁约束**：`OverlayManager::state` 是 `Mutex<OverlayState>`，`show` / `hide` 在**持锁期间**会做窗口操作（`set_size` / `set_position` / `show` / `hide`）。任何其他路径（尤其 `resize`）**不得同步取这把锁**，否则会在窗口操作触发 WebView2 重排时死锁，进程被强制终止（Windows 上表现为 exit code `0xffffffff`，无 panic 日志）。需要读状态时用 `try_lock`，拿不到就跳过本次操作。
 

@@ -100,13 +100,10 @@ export const ConvertPanel = forwardRef<ConvertPanelRef, ConvertPanelProps>(
       return () => window.clearTimeout(timer);
     }, [query]);
 
-    // 面板卸载 / 浮层隐藏时收起详情窗口
+    // 卸载时只取消排队的展示；详情是否隐藏由后端按隐藏原因决定
     useEffect(() => {
       const cleanup = () => {
         ++detailGenerationRef.current;
-        detailTaskRef.current = detailTaskRef.current
-          .then(() => ipc.jsonDetailHide())
-          .catch(() => undefined);
       };
       window.addEventListener('beforeunload', cleanup);
       return () => {
@@ -201,6 +198,7 @@ export const ConvertPanel = forwardRef<ConvertPanelRef, ConvertPanelProps>(
                 onClick={() => {
                   selectedRef.current = index;
                   setSelected(index);
+                  copy(false);
                 }}
                 onDoubleClick={() => copy(true)}
               >
@@ -250,7 +248,7 @@ export const ConvertPanel = forwardRef<ConvertPanelRef, ConvertPanelProps>(
 
         <footer className="qw-footer" aria-live="polite">
           <span className="qw-footer-text">
-            {error || '↑↓ 选择 · Enter 复制 · Ctrl+Enter 仅复制 · Esc 关闭'}
+            {error || '↑↓ 选择 · 点击复制 · Enter 复制并关闭 · Esc 关闭'}
           </span>
         </footer>
       </section>

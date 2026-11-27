@@ -71,20 +71,16 @@ function App() {
         }
       });
 
-      // 监听启动器打开事件（带选中文本）
-      const unlistenLauncherOpen = listen<string>('launcher://open', (event) => {
-        ipc.overlayShow('launcher').catch(console.error);
-        setMode('launcher');
+      // 监听启动器预填事件（划词读取完成后，浮层已显示）
+      const unlistenLauncherPrefill = listen<string>('launcher://prefill', (event) => {
         const text = event.payload;
         if (text) {
           setLauncherPrefill(text);
         }
       });
 
-      // 监听转换打开事件（带选中文本）
-      const unlistenConvertOpen = listen<string>('convert://open', (event) => {
-        ipc.overlayShow('convert').catch(console.error);
-        setMode('convert');
+      // 监听转换预填事件（划词读取完成后，浮层已显示）
+      const unlistenConvertPrefill = listen<string>('convert://prefill', (event) => {
         const text = event.payload;
         if (text) {
           setConvertPrefill(text);
@@ -121,8 +117,8 @@ function App() {
         unlistenShown.then(f => f());
         unlistenHidden.then(f => f());
         unlistenHotkey.then(f => f());
-        unlistenLauncherOpen.then(f => f());
-        unlistenConvertOpen.then(f => f());
+        unlistenLauncherPrefill.then(f => f());
+        unlistenConvertPrefill.then(f => f());
         window.removeEventListener('keydown', handleKeyDown);
       };
     }
